@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anvl"
+version = "0.1.0"
+description = "Session monitor and handoff tool for Claude Code"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "IronDevz" },
+    { name = "Juan Luis Montes" },
+]
+keywords = ["claude", "claude-code", "session", "monitor", "tokens", "handoff"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Utilities",
+]
+dependencies = ["rich>=13.0"]
+
+[project.urls]
+Homepage = "https://github.com/jumontes/anvl"
+Repository = "https://github.com/jumontes/anvl"
+Issues = "https://github.com/jumontes/anvl/issues"
+
+[project.scripts]
+anvl = "anvl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["anvl*"]
+
+[tool.setuptools.package-data]
+"anvl.web" = ["*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

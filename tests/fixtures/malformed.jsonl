@@ -1,0 +1,6 @@
+{"type":"ai-title","sessionId":"test-malformed-001","aiTitle":"Malformed test"}
+this is not valid json
+{"parentUuid":null,"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]},"uuid":"u1","timestamp":"2026-04-01T10:00:00.000Z","type":"user","cwd":"c:\\test\\project","sessionId":"test-malformed-001","gitBranch":"main"}
+{broken json here
+{"parentUuid":"u1","message":{"id":"msg_001","role":"assistant","content":[{"type":"text","text":"Hi!"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":50,"output_tokens":20}},"requestId":"req_001","type":"assistant","uuid":"a1","timestamp":"2026-04-01T10:00:01.000Z","cwd":"c:\\test\\project","sessionId":"test-malformed-001","gitBranch":"main"}
+
