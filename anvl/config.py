@@ -16,7 +16,7 @@ DEFAULT_CONFIG = {
     "auto_detect_project": True,
     "window_hours": 5,  # Rolling window size (Max 5x = 5h)
     "weighted_quota_limit": 105_000_000,  # Weighted token budget (calibrated for Max 5x)
-    "handoff_waste_threshold": 100,  # Auto-handoff when waste exceeds this
+    "handoff_waste_threshold": 50,  # Auto-handoff when cumulative waste exceeds this
 }
 
 

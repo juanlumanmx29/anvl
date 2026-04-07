@@ -84,8 +84,8 @@ def extract_pending_work(session: SessionData) -> str:
         return "No clear pending work detected."
 
     # Scan last 3 turns for TODO-like patterns
-    patterns_user = ["todo", "falta", "pending", "next", "still need", "después", "luego"]
-    patterns_assistant = ["todo", "next step", "remaining", "still need", "pendiente", "falta"]
+    patterns_user = ["todo", "pending", "next", "still need", "remaining", "left to do"]
+    patterns_assistant = ["todo", "next step", "remaining", "still need", "left to do", "not yet"]
 
     findings = []
     for turn in session.turns[-3:]:

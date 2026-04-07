@@ -82,9 +82,10 @@ def uninstall_hook() -> None:
 
 
 def hook_entrypoint() -> None:
-    """Called by Claude Code after each tool use.
+    """Called by Claude Code on each event (UserPromptSubmit / PostToolUse).
 
-    Shows conversation health and auto-generates handoff when critically inflated.
+    Computes cumulative session waste and alerts the user with
+    conversational messages, as if Claude itself were speaking.
     """
     config = load_config()
     threshold = config.get("waste_threshold", 7)
@@ -98,65 +99,42 @@ def hook_entrypoint() -> None:
 
     jsonl_path, _ = result
 
-    # Fast path: read only the tail
-    usage = _read_last_usage(jsonl_path)
-    if usage is None:
+    # Compute cumulative session waste (all turns, not just last message)
+    stats = _compute_session_stats(jsonl_path)
+    if stats is None:
         return
 
-    input_tokens = usage.get("input_tokens", 0)
-    cache_read = usage.get("cache_read_input_tokens", 0)
-    cache_creation = usage.get("cache_creation_input_tokens", 0)
-    output = max(usage.get("output_tokens", 0), 1)
+    turns = stats["turns"]
+    total_input = stats["total_input"]
+    total_output = stats["total_output"]
+    cache_read = stats["last_cache_read"]
+    waste = total_input / max(total_output, 1)
 
-    total_input = input_tokens + cache_read + cache_creation
-    waste = total_input / output
-
-    if output <= 1:  # Skip tool-only turns
+    if turns < 2:  # Too early to judge
         return
 
     if waste <= threshold:
         return
 
-    # Calculate conversation health based on context growth
-    # Cache read growing = context is getting bigger
-    cache_ratio = cache_read / max(total_input, 1)
-    context_health = _estimate_context_health(cache_read, cache_creation, output)
-
-    handoff_threshold = config.get("handoff_waste_threshold", 100)
+    handoff_threshold = config.get("handoff_waste_threshold", 50)
 
     if waste > handoff_threshold:
-        _auto_handoff(jsonl_path, waste, context_health)
-    elif context_health == "critical":
+        _auto_handoff(jsonl_path, waste, turns)
+    elif waste > 20:
         print(
-            f"\n\U0001f534 ANVL: Conversation critically inflated ({waste:.0f}x waste)\n"
-            f"   Context is {cache_read:,} tokens and growing.\n"
-            f"   Run: anvl handoff\n"
-            f"   Then start a new conversation with the handoff file.\n",
+            f"\n[ANVL] This session is getting expensive ({waste:.0f}x waste, {turns} turns).\n"
+            f"   I recommend starting a new conversation soon.\n"
+            f"   Run `anvl handoff` to save context, then open a fresh session.\n",
             file=sys.stdout,
         )
-    elif context_health == "warning":
+    elif waste > threshold:
         print(
-            f"\U0001f7e1 ANVL: Session inflating ({waste:.1f}x waste, cache: {cache_read:,} tokens)\n"
-            f"   Consider running `anvl handoff` soon.\n",
+            f"\n[ANVL] Session waste is {waste:.1f}x after {turns} turns. Keep an eye on it.\n",
             file=sys.stdout,
         )
 
 
-def _estimate_context_health(cache_read: int, cache_creation: int, output: int) -> str:
-    """Estimate how close the conversation is to needing a restart.
-
-    Based on cache read size — bigger context = more tokens per turn.
-    """
-    if cache_read > 150_000:
-        return "critical"  # Context is huge, definitely restart
-    elif cache_read > 80_000:
-        return "warning"   # Getting large
-    elif cache_read > 40_000:
-        return "elevated"  # Starting to grow
-    return "healthy"
-
-
-def _auto_handoff(jsonl_path: Path, waste: float, health: str) -> None:
+def _auto_handoff(jsonl_path: Path, waste: float, turns: int) -> None:
     """Auto-generate handoff.md and print clear restart instructions."""
     try:
         from .parser import parse_session_file
@@ -170,49 +148,75 @@ def _auto_handoff(jsonl_path: Path, waste: float, health: str) -> None:
 
         print(
             f"\n{'='*60}\n"
-            f"\U0001f6a8 ANVL: Session critically inflated ({waste:.0f}x waste)\n"
+            f"[ANVL] This session is critically inflated ({waste:.0f}x waste, {turns} turns).\n"
             f"\n"
-            f"\U0001f4be Handoff saved: {output_path}\n"
+            f"Handoff saved: {output_path}\n"
             f"\n"
-            f"\U0001f449 To continue:\n"
+            f"To continue without wasting tokens:\n"
             f"   1. Open a new Claude Code conversation\n"
             f"   2. Say: Read handoff.md and continue where I left off\n"
-            f"      or drag handoff.md into the chat\n"
             f"\n"
-            f"   This saves ~40-60% of your quota per session.\n"
+            f"This typically saves 40-60% of your quota.\n"
             f"{'='*60}\n",
             file=sys.stdout,
         )
     except Exception as e:
-        print(f"\u26a0\ufe0f ANVL: Auto-handoff failed: {e}", file=sys.stderr)
+        print(f"[ANVL] Auto-handoff failed: {e}", file=sys.stderr)
 
 
-def _read_last_usage(jsonl_path: Path) -> dict | None:
-    """Read the last assistant message with usage data from the JSONL file."""
+def _compute_session_stats(jsonl_path: Path) -> dict | None:
+    """Compute cumulative session stats by scanning all usage records.
+
+    Returns dict with total_input, total_output, turns, last_cache_read.
+    Optimized: reads the full file but only parses usage fields.
+    """
+    total_input = 0
+    total_output = 0
+    turns = 0
+    last_cache_read = 0
+
     try:
-        file_size = jsonl_path.stat().st_size
-        read_size = min(file_size, 10240)
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # Quick filter: only parse lines that look like assistant messages
+                if '"type":"assistant"' not in line and '"type": "assistant"' not in line:
+                    # Count user turns (non-tool-result)
+                    if '"type":"user"' in line or '"type": "user"' in line:
+                        if '"tool_use_id"' not in line:
+                            turns += 1
+                    continue
 
-        with open(jsonl_path, "rb") as f:
-            f.seek(max(0, file_size - read_size))
-            tail = f.read().decode("utf-8", errors="replace")
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-        lines = tail.strip().split("\n")
-        for line in reversed(lines):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+                msg = record.get("message", {})
+                usage = msg.get("usage")
+                if not usage:
+                    continue
 
-            if record.get("type") != "assistant":
-                continue
+                inp = usage.get("input_tokens", 0)
+                cr = usage.get("cache_read_input_tokens", 0)
+                cc = usage.get("cache_creation_input_tokens", 0)
+                out = usage.get("output_tokens", 0)
 
-            msg = record.get("message", {})
-            usage = msg.get("usage")
-            if usage and usage.get("output_tokens", 0) > 0:
-                return usage
+                total_input += inp + cr + cc
+                total_output += out
+                last_cache_read = cr
 
     except OSError:
-        pass
+        return None
 
-    return None
+    if total_output == 0:
+        return None
+
+    return {
+        "total_input": total_input,
+        "total_output": total_output,
+        "turns": turns,
+        "last_cache_read": last_cache_read,
+    }

@@ -1,52 +1,52 @@
 # ANVL
 
-**Monitor de sesiones y herramienta de handoff para Claude Code.**
+**Session monitor and handoff tool for Claude Code.**
 
 Developed by **IronDevz**
 
 ---
 
-## El problema
+## The problem
 
-Claude Code envía todo el historial de la conversación en cada turno. En el turno 1 envías ~5K tokens, pero en el turno 50 estás enviando ~170K tokens para recibir 500 de respuesta. Esto quema tu cuota exponencialmente.
+Claude Code sends the entire conversation history on every turn. On turn 1 you send ~5K tokens, but by turn 50 you're sending ~170K tokens to get 500 back. This burns your quota exponentially.
 
-**ANVL** detecta esta inflación en tiempo real y te ayuda a hacer un corte limpio: genera un resumen de lo trabajado y lo pendiente, para que puedas continuar en una sesión nueva sin perder contexto. Esto te ahorra entre 40-60% de tu cuota diaria.
+**ANVL** detects this inflation in real time and helps you make a clean cut: it generates a summary of what was done and what's pending, so you can continue in a fresh session without losing context. This saves 40-60% of your daily quota.
 
-## Cómo funciona
+## How it works
 
 ```
-Sesión inflada (170K tokens/turno)
+Inflated session (170K tokens/turn)
          │
-    ANVL detecta waste > 7x
+    ANVL detects waste > 7x
          │
-    Genera handoff.md automáticamente
+    Generates handoff.md automatically
          │
-    Abres nueva sesión de Claude Code
+    Open a new Claude Code session
          │
-    "Lee handoff.md y continúa donde quedé"
+    "Read handoff.md and continue where I left off"
          │
-Sesión fresca (5K tokens/turno) ✓
+Fresh session (5K tokens/turn) ✓
 ```
 
-El **waste factor** es el ratio entre tokens de entrada y tokens de salida. Un valor alto significa que Claude está leyendo mucho contexto para generar poca respuesta:
+The **waste factor** is the ratio between input tokens and output tokens. A high value means Claude is reading a lot of context to generate little output:
 
-| Waste Factor | Estado | Acción |
+| Waste Factor | Status | Action |
 |:---:|:---:|:---|
-| < 3x | Verde | Sesión saludable |
-| 3-7x | Amarillo | Empezando a inflarse |
-| > 7x | Rojo | Haz handoff ahora |
+| < 3x | Green | Session is healthy |
+| 3-7x | Yellow | Starting to inflate |
+| > 7x | Red | Do a handoff now |
 
 ---
 
-## Instalación
+## Installation
 
-### Opción 1: Desde PyPI (recomendado)
+### Option 1: From PyPI (recommended)
 
 ```bash
 pip install anvl
 ```
 
-### Opción 2: Desde el código fuente
+### Option 2: From source
 
 ```bash
 git clone https://github.com/jumontes/anvl.git
@@ -54,128 +54,127 @@ cd anvl
 pip install -e .
 ```
 
-### Requisitos
+### Requirements
 
-- Python 3.11 o superior
-- La única dependencia es [rich](https://github.com/Textualize/rich) (se instala automáticamente)
+- Python 3.11 or higher
+- Only dependency is [rich](https://github.com/Textualize/rich) (installed automatically)
 
 ---
 
-## Setup inicial
+## Initial setup
 
-Después de instalar, corre esto una sola vez:
+After installing, run this once:
 
 ```bash
 anvl init
 ```
 
-Esto hace dos cosas:
-1. Crea el archivo de configuración en `~/.anvl/config.json`
-2. Instala un hook en Claude Code que te avisa cuando una sesión se infla
+This does two things:
+1. Creates the config file at `~/.anvl/config.json`
+2. Installs a hook in Claude Code that alerts you when a session inflates
 
-Listo. ANVL ahora te alertará automáticamente cuando necesites rotar la sesión.
+That's it. ANVL will now automatically alert you when you need to rotate the session.
 
 ---
 
-## Uso
+## Usage
 
-### Ver el estado de tu sesión actual
+### Check your current session status
 
 ```bash
 anvl status
 ```
 
-Muestra waste factor, tokens usados, tendencia, y un semáforo verde/amarillo/rojo.
+Shows waste factor, tokens used, trend, and a green/yellow/red semaphore.
 
-### Ver todas tus sesiones
+### View all your sessions
 
 ```bash
-anvl sessions              # Últimas 20 sesiones
-anvl sessions --active     # Solo las que están corriendo
-anvl sessions --today      # Solo las de hoy
-anvl sessions --all        # Todas sin límite
+anvl sessions              # Last 20 sessions
+anvl sessions --active     # Only running sessions
+anvl sessions --today      # Only today's sessions
+anvl sessions --all        # All sessions, no limit
 ```
 
-### Monitor en tiempo real
+### Live monitor
 
 ```bash
-anvl monitor               # Se refresca cada 2 segundos
-anvl monitor --interval 5  # Cada 5 segundos
+anvl monitor               # Refreshes every 2 seconds
+anvl monitor --interval 5  # Every 5 seconds
 ```
 
-Panel live en la terminal con gauge de waste y tabla de tokens por turno.
+Live terminal panel with waste gauge and per-turn token table.
 
-### Dashboard web
+### Web dashboard
 
 ```bash
-anvl dashboard             # Abre http://localhost:3000
-anvl dashboard --port 8080 # Puerto personalizado
+anvl dashboard             # Opens http://localhost:3000
+anvl dashboard --port 8080 # Custom port
 ```
 
-Dashboard con tema oscuro, gráficos interactivos, y overview global de todas tus sesiones. Incluye:
-- Barra de uso de cuota con timer de reset
-- Gráfico de tokens por turno (cache read, cache creation, output)
-- Gráfico de tendencia del waste factor
-- Generación de handoff con un click
+Dark-themed dashboard with interactive charts and global overview of all sessions. Includes:
+- Quota usage bar with reset timer
+- Per-turn token chart (cache read, cache creation, output)
+- Waste factor trend chart
+- One-click handoff generation
 
-### Generar handoff manualmente
+### Generate handoff manually
 
 ```bash
-anvl handoff               # Genera handoff.md en el directorio del proyecto
-anvl handoff -o ruta.md    # Ruta personalizada
+anvl handoff               # Generates handoff.md in the project directory
+anvl handoff -o path.md    # Custom path
 ```
 
-El archivo generado contiene:
-- Resumen de la sesión y trabajo completado
-- Archivos tocados y acciones realizadas
-- Últimos 3 turnos resumidos
-- Trabajo pendiente detectado automáticamente
-- Contexto técnico (rama, tokens, timestamps)
+The generated file contains:
+- Session summary and completed work
+- Files touched and actions performed
+- Last 3 turns summarized
+- Automatically detected pending work
+- Technical context (branch, tokens, timestamps)
 
-### Reporte multi-sesión
+### Multi-session report
 
 ```bash
-anvl report                # Tabla comparativa de todas las sesiones del proyecto
+anvl report                # Comparative table of all project sessions
 ```
 
 ---
 
-## Alertas automáticas
+## Automatic alerts
 
-Si corriste `anvl init`, el hook ya está instalado. Cuando el waste factor sube, verás alertas directamente en Claude Code:
-
-```
-🟡 ANVL: Session inflating (8.5x waste, cache: 95,000 tokens)
-   Consider running `anvl handoff` soon.
-```
+If you ran `anvl init`, the hook is already installed. When the cumulative waste factor rises, you'll see alerts directly in Claude Code:
 
 ```
-🔴 ANVL: Conversation critically inflated (45x waste)
-   Context is 150,000 tokens and growing.
-   Run: anvl handoff
+[ANVL] Session waste is 8.5x after 12 turns. Keep an eye on it.
 ```
 
-Cuando llega a niveles catastróficos (>100x), ANVL genera el handoff automáticamente y te dice exactamente cómo continuar:
+```
+[ANVL] This session is getting expensive (25x waste, 18 turns).
+   I recommend starting a new conversation soon.
+   Run `anvl handoff` to save context, then open a fresh session.
+```
+
+When it reaches critical levels (>50x), ANVL generates the handoff automatically and tells you exactly how to continue:
 
 ```
 ============================================================
-🚨 ANVL: Session critically inflated (168x waste)
+[ANVL] This session is critically inflated (168x waste, 24 turns).
 
-💾 Handoff saved: handoff.md
+Handoff saved: handoff.md
 
-👉 To continue:
+To continue without wasting tokens:
    1. Open a new Claude Code conversation
    2. Say: Read handoff.md and continue where I left off
 
-   This saves ~40-60% of your quota per session.
+This typically saves 40-60% of your quota.
 ============================================================
 ```
 
 ---
 
-## Configuración
+## Configuration
 
-Archivo: `~/.anvl/config.json`
+File: `~/.anvl/config.json`
 
 ```json
 {
@@ -183,49 +182,49 @@ Archivo: `~/.anvl/config.json`
   "dashboard_port": 3000,
   "window_hours": 5,
   "weighted_quota_limit": 105000000,
-  "handoff_waste_threshold": 100
+  "handoff_waste_threshold": 50
 }
 ```
 
-| Campo | Qué hace | Default |
-|-------|----------|---------|
-| `waste_threshold` | Umbral para las alertas del hook | 7 |
-| `dashboard_port` | Puerto del dashboard web | 3000 |
-| `window_hours` | Tamaño de la ventana rolling (horas) | 5 |
-| `weighted_quota_limit` | Presupuesto de tokens ponderado | 105M |
-| `handoff_waste_threshold` | Umbral para auto-handoff | 100 |
+| Field | Description | Default |
+|-------|-------------|---------|
+| `waste_threshold` | Threshold for hook alerts | 7 |
+| `dashboard_port` | Web dashboard port | 3000 |
+| `window_hours` | Rolling window size (hours) | 5 |
+| `weighted_quota_limit` | Weighted token budget | 105M |
+| `handoff_waste_threshold` | Threshold for auto-handoff | 50 |
 
 ---
 
-## Referencia rápida de comandos
+## Command reference
 
-| Comando | Qué hace |
-|---------|----------|
-| `anvl init` | Setup inicial (config + hook) |
-| `anvl status` | Estado de la sesión actual |
-| `anvl sessions` | Todas las sesiones con stats |
-| `anvl monitor` | Monitor live en terminal |
-| `anvl dashboard` | Dashboard web con gráficos |
-| `anvl report` | Reporte comparativo multi-sesión |
-| `anvl handoff` | Generar resumen para rotación |
-| `anvl install` | Instalar hook en Claude Code |
-| `anvl uninstall` | Remover hook |
+| Command | Description |
+|---------|-------------|
+| `anvl init` | Initial setup (config + hook) |
+| `anvl status` | Current session status |
+| `anvl sessions` | All sessions with stats |
+| `anvl monitor` | Live terminal monitor |
+| `anvl dashboard` | Web dashboard with charts |
+| `anvl report` | Multi-session comparative report |
+| `anvl handoff` | Generate summary for rotation |
+| `anvl install` | Install hook in Claude Code |
+| `anvl uninstall` | Remove hook |
 
 ---
 
-## Cómo contribuir
+## Contributing
 
-1. Fork el repo
-2. Crea una rama (`git checkout -b mi-feature`)
-3. Corre los tests (`python -m pytest tests/ -v`)
-4. Haz commit y push
-5. Abre un Pull Request
+1. Fork the repo
+2. Create a branch (`git checkout -b my-feature`)
+3. Run tests (`python -m pytest tests/ -v`)
+4. Commit and push
+5. Open a Pull Request
 
 ---
 
 ## License
 
-MIT — ver [LICENSE](LICENSE)
+MIT — see [LICENSE](LICENSE)
 
 ---
 
