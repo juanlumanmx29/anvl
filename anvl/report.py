@@ -66,7 +66,7 @@ def generate_report(cwd: Path | None = None) -> None:
             m.session_id[:8],
             m.ai_title[:35] if m.ai_title else "Untitled",
             str(m.turn_count),
-            f"{m.average_waste_factor:.1f}x",
+            f"{m.waste_factor:.1f}x",
             f"{peak_waste:.0f}x",
             format_tokens(m.total_input_tokens),
             format_tokens(m.total_output_tokens),
@@ -85,9 +85,9 @@ def generate_report(cwd: Path | None = None) -> None:
         )
 
     # Recommendation
-    high_waste = [m for m in all_metrics if m.average_waste_factor > 100]
+    high_waste = [m for m in all_metrics if m.waste_factor > 5]
     if high_waste:
         console.print(
-            f"\n[yellow]\u26a0 {len(high_waste)} session(s) averaging >100x waste. "
+            f"\n[yellow]\u26a0 {len(high_waste)} session(s) with >5x waste. "
             f"Use `anvl handoff` earlier to reduce token consumption.[/yellow]"
         )

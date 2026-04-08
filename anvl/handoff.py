@@ -128,7 +128,7 @@ def generate_handoff(
     lines.append(f"# ANVL Handoff \u2014 {session.ai_title or 'Untitled Session'}")
     lines.append(
         f"> Generated: {now} | Session: {session_short} | "
-        f"Turns: {metrics.turn_count} | Waste: {metrics.current_waste_factor:.1f}x"
+        f"Turns: {metrics.turn_count} | Waste: {metrics.waste_factor:.1f}x"
     )
     lines.append("")
 

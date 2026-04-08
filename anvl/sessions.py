@@ -3,7 +3,7 @@
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,30 +38,48 @@ class SessionSummary:
     cache_creation: int = 0
     raw_input: int = 0  # input_tokens only (not cache)
     turns: int = 0
+    per_turn_tokens: list[int] = field(default_factory=list)
 
     @property
     def waste_factor(self) -> float:
-        """Cost-weighted waste: weighted_input_cost / weighted_output_cost.
+        """Waste: avg tokens/turn (last 5) / avg tokens/turn (first 5).
 
-        Uses token pricing weights so cache reads (90% cheaper) don't
-        inflate the metric.  A ratio of 1x means input cost equals output
-        cost — perfectly balanced.  Values above ~5x signal real waste.
+        Measures how much the session has grown compared to its baseline.
+        A fresh session starts at 1.0x.
         """
-        weighted_input = (
-            self.raw_input * TOKEN_WEIGHTS["input"]
-            + self.cache_read * TOKEN_WEIGHTS["cache_read"]
-            + self.cache_creation * TOKEN_WEIGHTS["cache_creation"]
-        )
-        weighted_output = self.total_output * TOKEN_WEIGHTS["output"]
-        return weighted_input / max(weighted_output, 1)
+        window = 5
+        if len(self.per_turn_tokens) < window:
+            return 1.0
+        baseline = self.per_turn_tokens[:window]
+        current = self.per_turn_tokens[-window:]
+        baseline_avg = sum(baseline) / len(baseline)
+        if baseline_avg == 0:
+            return 1.0
+        return max(1.0, round(sum(current) / len(current) / baseline_avg, 1))
+
+    @property
+    def health_pct(self) -> int:
+        """Session health as percentage (0-100).
+
+        Linear from 1x (100%) to 10x (0%). Under 5 turns = 100%.
+        """
+        if len(self.per_turn_tokens) < 5:
+            return 100
+        w = self.waste_factor
+        if w <= 1.0:
+            return 100
+        threshold = 10.0
+        if w >= threshold:
+            return 0
+        return max(0, min(100, int(100 * (threshold - w) / (threshold - 1))))
 
     @property
     def efficiency(self) -> str:
-        """Session health: green/yellow/red based on cost-weighted waste."""
-        w = self.waste_factor
-        if w < 2:
+        """Session health color: green/yellow/red derived from health %."""
+        pct = self.health_pct
+        if pct >= 60:
             return "green"
-        elif w <= 5:
+        elif pct >= 30:
             return "yellow"
         return "red"
 
@@ -79,8 +97,8 @@ class SessionSummary:
 def _quick_token_sum(jsonl_path: Path) -> dict:
     """Fast token counting from JSONL. Returns dict with detailed breakdown.
 
-    Deduplicates by requestId — only the last record per API call is kept,
-    matching analyzer.py behavior and avoiding double-counting streaming chunks.
+    Also collects per-turn token totals for waste factor calculation.
+    Deduplicates by requestId — only the last record per API call is kept.
     """
     totals = {
         "input": 0,        # raw input_tokens
@@ -88,10 +106,15 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
         "cache_creation": 0,
         "output": 0,
         "turns": 0,
+        "per_turn_tokens": [],  # total tokens per user turn
     }
 
     # Track usage per requestId; keep latest (has final usage)
     request_usage: dict[str, dict] = {}
+    # Per-turn tracking
+    current_turn_direct = 0
+    turn_request_usage: dict[str, int] = {}
+    in_turn = False
 
     try:
         with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -111,23 +134,43 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
                         isinstance(c, dict) and "tool_use_id" in c for c in content
                     )
                     if not is_tool_result:
+                        # Save previous turn
+                        if in_turn:
+                            turn_total = current_turn_direct + sum(turn_request_usage.values())
+                            if turn_total > 0:
+                                totals["per_turn_tokens"].append(turn_total)
+                        current_turn_direct = 0
+                        turn_request_usage = {}
+                        in_turn = True
                         totals["turns"] += 1
 
                 elif rtype == "assistant":
                     usage = record.get("message", {}).get("usage", {})
                     if usage:
+                        inp = usage.get("input_tokens", 0)
+                        cr = usage.get("cache_read_input_tokens", 0)
+                        cc = usage.get("cache_creation_input_tokens", 0)
+                        out = usage.get("output_tokens", 0)
+                        total = inp + cr + cc + out
+
                         request_id = record.get("requestId", "")
                         if request_id:
-                            # Overwrite: last chunk per requestId has final usage
                             request_usage[request_id] = usage
+                            turn_request_usage[request_id] = total
                         else:
-                            # No requestId — count directly (shouldn't happen)
-                            totals["input"] += usage.get("input_tokens", 0)
-                            totals["cache_read"] += usage.get("cache_read_input_tokens", 0)
-                            totals["cache_creation"] += usage.get("cache_creation_input_tokens", 0)
-                            totals["output"] += usage.get("output_tokens", 0)
+                            totals["input"] += inp
+                            totals["cache_read"] += cr
+                            totals["cache_creation"] += cc
+                            totals["output"] += out
+                            current_turn_direct += total
     except OSError:
         pass
+
+    # Save last turn
+    if in_turn:
+        turn_total = current_turn_direct + sum(turn_request_usage.values())
+        if turn_total > 0:
+            totals["per_turn_tokens"].append(turn_total)
 
     # Sum deduplicated usage
     for usage in request_usage.values():
@@ -276,6 +319,7 @@ def collect_all_sessions() -> list[SessionSummary]:
                 cache_creation=totals["cache_creation"],
                 raw_input=totals["input"],
                 turns=totals["turns"],
+                per_turn_tokens=totals["per_turn_tokens"],
             ))
 
     summaries.sort(key=lambda s: (not s.is_active, -s.started_at.timestamp()))

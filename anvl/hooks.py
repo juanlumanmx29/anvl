@@ -12,6 +12,7 @@ SETTINGS_PATH = CLAUDE_HOME / "settings.json"
 HOOK_COMMANDS = {
     "UserPromptSubmit": "anvl hook user-prompt-submit",
     "PostToolUse": "anvl hook post-tool-use",
+    "SessionStart": "anvl hook session-start",
 }
 
 
@@ -98,15 +99,37 @@ def uninstall_hook() -> None:
         print("No ANVL hooks found to remove.", file=sys.stderr)
 
 
+def session_start_entrypoint() -> None:
+    """Called by Claude Code on SessionStart.
+
+    Checks if handoff.md exists in the cwd and injects context
+    so Claude knows about the previous session's handoff.
+    """
+    # Read hook input to get cwd
+    try:
+        input_data = json.loads(sys.stdin.read())
+        cwd = Path(input_data.get("cwd", "."))
+    except (json.JSONDecodeError, ValueError):
+        cwd = Path.cwd()
+
+    handoff_path = cwd / "handoff.md"
+    if handoff_path.exists():
+        print(
+            "A previous session handoff exists at handoff.md. "
+            "If the user asks to continue, read that file first for full context.",
+            file=sys.stdout,
+        )
+
+
 def hook_entrypoint() -> None:
     """Called by Claude Code on UserPromptSubmit / PostToolUse.
 
-    Computes session health and alerts the user with clear messages.
-    Blocks the session (exit code 2) when critically inflated.
+    Uses Clauditor-style waste: current_tokens_per_turn / baseline_tokens_per_turn.
+    Alerts when the session is inflating. Blocks at critical levels.
     """
     config = load_config()
-    threshold = config.get("waste_threshold", 2)
-    handoff_threshold = config.get("handoff_waste_threshold", 10)
+    block_threshold = config.get("handoff_waste_threshold", 10)
+    min_turns = config.get("min_turns_for_alert", 5)
 
     cwd = Path.cwd()
     from .parser import find_active_session
@@ -116,45 +139,46 @@ def hook_entrypoint() -> None:
         return
 
     jsonl_path, _ = result
-    stats = _compute_session_stats(jsonl_path)
-    if stats is None:
+    turns_data = _collect_turn_tokens(jsonl_path)
+    if not turns_data or len(turns_data) < min_turns:
         return
 
-    turns = stats["turns"]
-    waste = _compute_waste(stats)
+    # Compute waste: avg last 5 / avg first 5
+    window = 5
+    baseline = turns_data[:window]
+    current = turns_data[-window:]
+    baseline_avg = sum(baseline) / len(baseline)
+    current_avg = sum(current) / len(current)
 
-    if turns < 2 or waste <= threshold:
+    if baseline_avg == 0:
         return
 
-    if waste > handoff_threshold:
+    waste = current_avg / baseline_avg
+    turns = len(turns_data)
+    health_pct = min(100, max(0, int(100 * (block_threshold - waste) / (block_threshold - 1)))) if waste > 1 else 100
+
+    if waste < 2:
+        return
+
+    if waste >= block_threshold and turns >= 20:
         # Critical: auto-handoff + block session
         _auto_handoff(jsonl_path, turns)
         sys.exit(2)
-    elif waste > 5:
-        # Red: strong warning, generate handoff
+    elif health_pct < 30:
+        # Red zone: strong warning, generate handoff
         _generate_handoff_quiet(jsonl_path)
         print(
-            "\n[ANVL] This session is inflated. Your work has been saved to handoff.md\n"
+            f"\n[ANVL] This session is inflated ({waste:.0f}x). Your work has been saved to handoff.md\n"
             '       Start a new conversation and say: "Read handoff.md and continue where I left off"\n',
             file=sys.stdout,
         )
-    elif waste > threshold:
-        # Yellow: informational
+    elif health_pct < 60:
+        # Yellow zone: informational
         print(
-            "\n[ANVL] This session is getting expensive. Consider starting a new conversation soon.\n",
+            f"\n[ANVL] Session health: {health_pct}% ({waste:.1f}x waste). "
+            "Consider starting a new conversation soon.\n",
             file=sys.stdout,
         )
-
-
-def _compute_waste(stats: dict) -> float:
-    """Compute cost-weighted waste from session stats."""
-    weighted_input = (
-        stats["total_raw_input"] * 1.0
-        + stats["total_cache_read"] * 0.1
-        + stats["total_cache_creation"] * 1.25
-    )
-    weighted_output = stats["total_output"] * 5.0
-    return weighted_input / max(weighted_output, 1)
 
 
 def _generate_handoff_quiet(jsonl_path: Path) -> Path | None:
@@ -198,18 +222,17 @@ def _auto_handoff(jsonl_path: Path, turns: int) -> None:
         )
 
 
-def _compute_session_stats(jsonl_path: Path) -> dict | None:
-    """Compute cumulative session stats by scanning all usage records.
+def _collect_turn_tokens(jsonl_path: Path) -> list[int]:
+    """Collect total tokens per user turn from JSONL (fast scan).
 
+    Returns a list where each entry is the total tokens for that turn.
     Deduplicates by requestId to avoid double-counting streaming chunks.
+    Groups assistant usage records by the preceding user turn.
     """
-    total_input = 0
-    total_output = 0
-    total_raw_input = 0
-    total_cache_read = 0
-    total_cache_creation = 0
-    turns = 0
-    request_usage: dict[str, dict] = {}
+    turn_totals: list[int] = []
+    current_turn_tokens = 0
+    request_usage: dict[str, int] = {}
+    in_turn = False
 
     try:
         with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -217,10 +240,21 @@ def _compute_session_stats(jsonl_path: Path) -> dict | None:
                 line = line.strip()
                 if not line:
                     continue
-                if '"type":"assistant"' not in line and '"type": "assistant"' not in line:
-                    if '"type":"user"' in line or '"type": "user"' in line:
-                        if '"tool_use_id"' not in line:
-                            turns += 1
+
+                # Detect user turns (not tool results)
+                if '"type":"user"' in line or '"type": "user"' in line:
+                    if '"tool_use_id"' not in line:
+                        # Save previous turn
+                        if in_turn:
+                            total = current_turn_tokens + sum(request_usage.values())
+                            if total > 0:
+                                turn_totals.append(total)
+                        current_turn_tokens = 0
+                        request_usage = {}
+                        in_turn = True
+                    continue
+
+                if not ('"type":"assistant"' in line or '"type": "assistant"' in line):
                     continue
 
                 try:
@@ -228,48 +262,29 @@ def _compute_session_stats(jsonl_path: Path) -> dict | None:
                 except json.JSONDecodeError:
                     continue
 
-                msg = record.get("message", {})
-                usage = msg.get("usage")
+                usage = record.get("message", {}).get("usage")
                 if not usage:
                     continue
 
+                inp = usage.get("input_tokens", 0)
+                cr = usage.get("cache_read_input_tokens", 0)
+                cc = usage.get("cache_creation_input_tokens", 0)
+                out = usage.get("output_tokens", 0)
+                total = inp + cr + cc + out
+
                 request_id = record.get("requestId", "")
                 if request_id:
-                    request_usage[request_id] = usage
+                    request_usage[request_id] = total
                 else:
-                    inp = usage.get("input_tokens", 0)
-                    cr = usage.get("cache_read_input_tokens", 0)
-                    cc = usage.get("cache_creation_input_tokens", 0)
-                    out = usage.get("output_tokens", 0)
-                    total_input += inp + cr + cc
-                    total_output += out
-                    total_raw_input += inp
-                    total_cache_read += cr
-                    total_cache_creation += cc
+                    current_turn_tokens += total
 
     except OSError:
-        return None
+        return []
 
-    # Sum deduplicated usage
-    for usage in request_usage.values():
-        inp = usage.get("input_tokens", 0)
-        cr = usage.get("cache_read_input_tokens", 0)
-        cc = usage.get("cache_creation_input_tokens", 0)
-        out = usage.get("output_tokens", 0)
-        total_input += inp + cr + cc
-        total_output += out
-        total_raw_input += inp
-        total_cache_read += cr
-        total_cache_creation += cc
+    # Don't forget the last turn
+    if in_turn:
+        total = current_turn_tokens + sum(request_usage.values())
+        if total > 0:
+            turn_totals.append(total)
 
-    if total_output == 0:
-        return None
-
-    return {
-        "total_input": total_input,
-        "total_output": total_output,
-        "total_raw_input": total_raw_input,
-        "total_cache_read": total_cache_read,
-        "total_cache_creation": total_cache_creation,
-        "turns": turns,
-    }
+    return turn_totals

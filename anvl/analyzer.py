@@ -1,14 +1,24 @@
-"""Waste factor computation and session metrics analysis."""
+"""Waste factor computation and session metrics analysis.
+
+Waste factor follows the Clauditor approach:
+  waste = avg_tokens_per_turn(last 5) / avg_tokens_per_turn(first 5)
+
+This measures how much the session has *grown* compared to its baseline,
+not an abstract input/output ratio.  A fresh session starts at 1x.
+"""
 
 from dataclasses import dataclass, field
 
 from .parser import SessionData, TokenUsage, Turn
 
+# Window size for baseline and current averages
+BASELINE_WINDOW = 5
+
 
 @dataclass
 class TurnMetrics:
     turn_index: int = 0
-    waste_factor: float = 0.0
+    total_tokens: int = 0
     total_input: int = 0
     output_tokens: int = 0
     cache_read: int = 0
@@ -29,55 +39,92 @@ class SessionMetrics:
     total_output_tokens: int = 0
     total_cache_read: int = 0
     total_cache_creation: int = 0
-    current_waste_factor: float = 0.0
-    average_waste_factor: float = 0.0
+    waste_factor: float = 1.0
+    baseline_per_turn: int = 0
+    current_per_turn: int = 0
+    health_pct: int = 100
     semaphore: str = "green"
     trend: str = "stable"
     per_turn: list[TurnMetrics] = field(default_factory=list)
 
 
-def compute_waste(usage: TokenUsage) -> float:
-    """Compute cost-weighted waste factor.
-
-    Weights cache_read at 0.1x (90% cheaper) and output at 5x
-    to reflect actual pricing.  Returns weighted_input / weighted_output.
-    """
-    weighted_input = (
-        usage.input_tokens * 1.0
-        + usage.cache_read_input_tokens * 0.1
-        + usage.cache_creation_input_tokens * 1.25
+def _total_tokens(usage: TokenUsage) -> int:
+    """Total tokens for a turn (all input categories + output)."""
+    return (
+        usage.input_tokens
+        + usage.cache_read_input_tokens
+        + usage.cache_creation_input_tokens
+        + usage.output_tokens
     )
-    weighted_output = usage.output_tokens * 5.0
-    return weighted_input / max(weighted_output, 1)
 
 
-def compute_semaphore(waste: float) -> str:
-    """Green < 2x, yellow 2-5x, red > 5x (cost-weighted)."""
-    if waste < 2:
+def compute_waste_factor(per_turn: list[TurnMetrics], window: int = BASELINE_WINDOW) -> tuple[float, int, int]:
+    """Compute waste as current_avg / baseline_avg (Clauditor formula).
+
+    Returns (waste_factor, baseline_per_turn, current_per_turn).
+    With < window turns, waste is always 1.0.
+    """
+    meaningful = [t for t in per_turn if not t.is_tool_only]
+    if len(meaningful) < window:
+        if meaningful:
+            avg = sum(t.total_tokens for t in meaningful) // len(meaningful)
+            return 1.0, avg, avg
+        return 1.0, 0, 0
+
+    baseline = meaningful[:window]
+    current = meaningful[-window:]
+
+    baseline_avg = sum(t.total_tokens for t in baseline) // len(baseline)
+    current_avg = sum(t.total_tokens for t in current) // len(current)
+
+    if baseline_avg == 0:
+        return 1.0, 0, current_avg
+
+    waste = round(current_avg / baseline_avg, 1)
+    return max(1.0, waste), baseline_avg, current_avg
+
+
+def compute_health_pct(waste: float, turns: int = 0, threshold: float = 10.0) -> int:
+    """Session health as percentage (0-100).
+
+    Maps waste linearly from 1x (100%) to threshold (0%).
+    Sessions with fewer than 5 turns always return 100%.
+    """
+    if turns < BASELINE_WINDOW:
+        return 100
+    if waste <= 1.0:
+        return 100
+    if waste >= threshold:
+        return 0
+    # Linear interpolation: 1x→100%, threshold→0%
+    return max(0, min(100, int(100 * (threshold - waste) / (threshold - 1))))
+
+
+def compute_semaphore(health_pct: int) -> str:
+    """Green/yellow/red derived from health percentage."""
+    if health_pct >= 60:
         return "green"
-    elif waste <= 5:
+    elif health_pct >= 30:
         return "yellow"
     return "red"
 
 
 def compute_trend(per_turn: list[TurnMetrics], window: int = 5) -> str:
-    """Compare average waste of last window turns vs previous window."""
-    # Filter out tool-only turns
+    """Compare average tokens/turn of last window vs previous window."""
     meaningful = [t for t in per_turn if not t.is_tool_only]
-    if len(meaningful) < 4:
+    if len(meaningful) < window * 2:
         return "stable"
 
-    mid = max(len(meaningful) - window, len(meaningful) // 2)
-    recent = meaningful[mid:]
-    previous = meaningful[max(0, mid - window):mid]
+    recent = meaningful[-window:]
+    previous = meaningful[-window * 2:-window]
 
-    if not previous or not recent:
+    avg_recent = sum(t.total_tokens for t in recent) / len(recent)
+    avg_prev = sum(t.total_tokens for t in previous) / len(previous)
+
+    if avg_prev == 0:
         return "stable"
 
-    avg_recent = sum(t.waste_factor for t in recent) / len(recent)
-    avg_prev = sum(t.waste_factor for t in previous) / len(previous)
-
-    ratio = avg_recent / max(avg_prev, 0.1)
+    ratio = avg_recent / avg_prev
     if ratio > 1.3:
         return "rising"
     elif ratio < 0.7:
@@ -95,20 +142,19 @@ def analyze_session(session: SessionData) -> SessionMetrics:
 
     cumulative_input = 0
     cumulative_output = 0
-    meaningful_wastes: list[float] = []
 
     for turn in session.turns:
         if turn.usage is None:
             continue
 
         u = turn.usage
-        waste = compute_waste(u)
+        total = _total_tokens(u)
         cumulative_input += u.total_input
         cumulative_output += u.output_tokens
 
         tm = TurnMetrics(
             turn_index=turn.index,
-            waste_factor=waste,
+            total_tokens=total,
             total_input=u.total_input,
             output_tokens=u.output_tokens,
             cache_read=u.cache_read_input_tokens,
@@ -126,20 +172,14 @@ def analyze_session(session: SessionData) -> SessionMetrics:
         metrics.total_cache_read += u.cache_read_input_tokens
         metrics.total_cache_creation += u.cache_creation_input_tokens
 
-        if not turn.is_tool_only:
-            meaningful_wastes.append(waste)
+    # Waste factor: current tokens/turn vs baseline tokens/turn
+    waste, baseline, current = compute_waste_factor(metrics.per_turn)
+    metrics.waste_factor = waste
+    metrics.baseline_per_turn = baseline
+    metrics.current_per_turn = current
 
-    # Current waste: cumulative cost-weighted ratio for entire session
-    raw_input = metrics.total_input_tokens - metrics.total_cache_read - metrics.total_cache_creation
-    weighted_input = raw_input * 1.0 + metrics.total_cache_read * 0.1 + metrics.total_cache_creation * 1.25
-    weighted_output = metrics.total_output_tokens * 5.0
-    metrics.current_waste_factor = weighted_input / max(weighted_output, 1)
-
-    # Average waste (excluding tool-only turns)
-    if meaningful_wastes:
-        metrics.average_waste_factor = sum(meaningful_wastes) / len(meaningful_wastes)
-
-    metrics.semaphore = compute_semaphore(metrics.current_waste_factor)
+    metrics.health_pct = compute_health_pct(waste, metrics.turn_count)
+    metrics.semaphore = compute_semaphore(metrics.health_pct)
     metrics.trend = compute_trend(metrics.per_turn)
 
     return metrics

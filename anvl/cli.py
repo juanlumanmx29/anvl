@@ -36,12 +36,6 @@ SEMAPHORE_ICONS = {
     "red": "[bold red]●[/bold red]",
 }
 
-SEMAPHORE_LABELS = {
-    "green": "Session is healthy",
-    "yellow": "Session is getting inflated",
-    "red": "Session is heavily inflated",
-}
-
 
 def cmd_status(args: argparse.Namespace) -> None:
     """Show status of the current/specified session."""
@@ -77,8 +71,10 @@ def cmd_status(args: argparse.Namespace) -> None:
             "session_id": metrics.session_id,
             "ai_title": metrics.ai_title,
             "turns": metrics.turn_count,
-            "current_waste": round(metrics.current_waste_factor, 1),
-            "average_waste": round(metrics.average_waste_factor, 1),
+            "health_pct": metrics.health_pct,
+            "waste_factor": metrics.waste_factor,
+            "baseline_per_turn": metrics.baseline_per_turn,
+            "current_per_turn": metrics.current_per_turn,
             "total_input": metrics.total_input_tokens,
             "total_output": metrics.total_output_tokens,
             "semaphore": metrics.semaphore,
@@ -93,8 +89,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 def _print_status(metrics: SessionMetrics, session) -> None:
     """Render status to terminal with rich."""
     icon = SEMAPHORE_ICONS[metrics.semaphore]
-    label = SEMAPHORE_LABELS[metrics.semaphore]
-    waste_color = {"green": "green", "yellow": "yellow", "red": "red"}[metrics.semaphore]
+    color = metrics.semaphore
 
     title = f'ANVL Status \u2014 "{metrics.ai_title}"'
     lines = []
@@ -103,16 +98,17 @@ def _print_status(metrics: SessionMetrics, session) -> None:
     lines.append("")
     lines.append(
         f"Turns: [bold]{metrics.turn_count}[/bold] | "
-        f"Total input: [bold]{format_tokens(metrics.total_input_tokens)}[/bold] | "
-        f"Total output: [bold]{format_tokens(metrics.total_output_tokens)}[/bold]"
+        f"Input: [bold]{format_tokens(metrics.total_input_tokens)}[/bold] | "
+        f"Output: [bold]{format_tokens(metrics.total_output_tokens)}[/bold]"
     )
     lines.append(
-        f"Current waste: [bold {waste_color}]{metrics.current_waste_factor:.1f}x[/bold {waste_color}] | "
-        f"Avg waste: [bold]{metrics.average_waste_factor:.1f}x[/bold] | "
+        f"Waste: [bold {color}]{metrics.waste_factor:.1f}x[/bold {color}] | "
+        f"Started at [dim]{format_tokens(metrics.baseline_per_turn)}/turn[/dim] -> "
+        f"now [bold]{format_tokens(metrics.current_per_turn)}/turn[/bold] | "
         f"Trend: {metrics.trend}"
     )
     lines.append("")
-    lines.append(f"Semaphore: {icon} {label}")
+    lines.append(f"Health: {icon} [{color}][bold]{metrics.health_pct}%[/bold][/{color}]")
 
     # Token breakdown per turn (last 10)
     if metrics.per_turn:
@@ -124,24 +120,23 @@ def _print_status(metrics: SessionMetrics, session) -> None:
         table.add_column("Cache Create", justify="right")
         table.add_column("Input", justify="right")
         table.add_column("Output", justify="right")
-        table.add_column("Waste", justify="right")
+        table.add_column("Total", justify="right")
 
         for tm in recent:
-            waste_style = "green" if tm.waste_factor < 3 else "yellow" if tm.waste_factor <= 7 else "red"
-            tool_marker = " \u2699" if tm.is_tool_only else ""
+            tool_marker = " [dim]\u2699[/dim]" if tm.is_tool_only else ""
             table.add_row(
                 str(tm.turn_index),
                 format_tokens(tm.cache_read),
                 format_tokens(tm.cache_creation),
                 format_tokens(tm.input_tokens),
                 format_tokens(tm.output_tokens),
-                f"[{waste_style}]{tm.waste_factor:.1f}x{tool_marker}[/{waste_style}]",
+                f"[bold]{format_tokens(tm.total_tokens)}[/bold]{tool_marker}",
             )
 
-        console.print(Panel("\n".join(lines), title=title, border_style=waste_color))
+        console.print(Panel("\n".join(lines), title=title, border_style=color))
         console.print(table)
     else:
-        console.print(Panel("\n".join(lines), title=title, border_style=waste_color))
+        console.print(Panel("\n".join(lines), title=title, border_style=color))
 
 
 def cmd_handoff(args: argparse.Namespace) -> None:
@@ -377,9 +372,12 @@ def cmd_sessions(args: argparse.Namespace) -> None:
 
 def cmd_hook(args: argparse.Namespace) -> None:
     """Hook entrypoint called by Claude Code (not user-facing)."""
-    from .hooks import hook_entrypoint
-
-    hook_entrypoint()
+    if args.event == "session-start":
+        from .hooks import session_start_entrypoint
+        session_start_entrypoint()
+    else:
+        from .hooks import hook_entrypoint
+        hook_entrypoint()
 
 
 def main() -> None:
@@ -423,7 +421,7 @@ def main() -> None:
 
     # hook (hidden - called by Claude Code)
     sp = subparsers.add_parser("hook")
-    sp.add_argument("event", choices=["post-tool-use", "user-prompt-submit"])
+    sp.add_argument("event", choices=["post-tool-use", "user-prompt-submit", "session-start"])
 
     args = parser.parse_args()
 
