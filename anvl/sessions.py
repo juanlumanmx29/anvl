@@ -276,25 +276,6 @@ def _is_process_running(pid: int) -> bool:
         return False
 
 
-# Max minutes since last JSONL write before considering session stale
-_STALE_MINUTES = 10
-
-
-def _is_session_stale(jsonl_path: Path) -> bool:
-    """Check if a session's JSONL hasn't been written to recently.
-
-    On Windows, processes can linger after a session closes. If the JSONL
-    file hasn't been modified in _STALE_MINUTES, the session is likely dead
-    even if the PID is still running.
-    """
-    try:
-        mtime = jsonl_path.stat().st_mtime
-        age_minutes = (time.time() - mtime) / 60
-        return age_minutes > _STALE_MINUTES
-    except OSError:
-        return True
-
-
 def _extract_project_name(cwd: str) -> str:
     """Extract short project name from full cwd path."""
     parts = Path(cwd).parts
@@ -367,7 +348,7 @@ def collect_all_sessions() -> list[SessionSummary]:
             else:
                 started_at = datetime.fromtimestamp(jsonl_file.stat().st_mtime, tz=timezone.utc)
 
-            is_active = bool(pid) and _is_process_running(pid) and not _is_session_stale(jsonl_file)
+            is_active = bool(pid) and _is_process_running(pid)
             ai_title = _get_ai_title(jsonl_file)
             totals = _quick_token_sum(jsonl_file)
             project_name = _extract_project_name(cwd) if cwd else project_dir.name
