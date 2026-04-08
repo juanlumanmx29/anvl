@@ -4,7 +4,8 @@ import json
 import sys
 from pathlib import Path
 
-from .config import CLAUDE_HOME, load_config
+from .calibration import get_calibrated_baseline, record_baseline
+from .config import CLAUDE_HOME, load_config, path_to_slug
 
 SETTINGS_PATH = CLAUDE_HOME / "settings.json"
 
@@ -138,17 +139,23 @@ def hook_entrypoint() -> None:
     if result is None:
         return
 
-    jsonl_path, _ = result
+    jsonl_path, session_id = result
     turns_data = _collect_turn_tokens(jsonl_path)
     if not turns_data or len(turns_data) < min_turns:
         return
 
-    # Compute peak waste: max window avg / min baseline (never decreases)
+    # Compute peak waste: max window avg / baseline (never decreases)
     window = 5
-    baseline_min = min(turns_data[:window])
+    session_baseline = min(turns_data[:window])
 
-    if baseline_min == 0:
+    if session_baseline == 0:
         return
+
+    # Auto-calibration: record this session's baseline, use calibrated if available
+    project_slug = path_to_slug(cwd)
+    record_baseline(project_slug, session_id, session_baseline)
+    calibrated = get_calibrated_baseline(project_slug)
+    baseline_min = calibrated if calibrated else session_baseline
 
     peak_waste = 1.0
     for i in range(len(turns_data) - window + 1):

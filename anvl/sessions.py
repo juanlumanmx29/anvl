@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import CLAUDE_HOME, get_projects_dir, get_sessions_dir, load_config
+from .calibration import get_calibrated_baseline, record_baseline
+from .config import CLAUDE_HOME, get_projects_dir, get_sessions_dir, load_config, path_to_slug
 
 # Simple mtime-based cache for collect_all_sessions
 _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
@@ -40,23 +41,42 @@ class SessionSummary:
     turns: int = 0
     per_turn_tokens: list[int] = field(default_factory=list)
 
+    # Optional calibrated baseline from historical sessions
+    calibrated_baseline: int | None = None
+
+    @property
+    def session_baseline(self) -> int:
+        """Min tokens/turn from first 5 turns of this session."""
+        window = 5
+        if len(self.per_turn_tokens) < window:
+            return 0
+        return min(self.per_turn_tokens[:window])
+
+    @property
+    def effective_baseline(self) -> int:
+        """Baseline used for waste calculation (calibrated or per-session)."""
+        if self.calibrated_baseline and self.calibrated_baseline > 0:
+            return self.calibrated_baseline
+        return self.session_baseline
+
     @property
     def waste_factor(self) -> float:
-        """Peak waste: max avg_window / min_baseline across all windows.
+        """Peak waste: max avg_window / baseline across all windows.
 
-        Uses minimum of first 5 turns as baseline. Checks every possible
+        Uses calibrated baseline if available (from historical sessions),
+        otherwise falls back to min(first 5 turns). Checks every possible
         5-turn window and keeps the worst — health never improves.
         """
         window = 5
         if len(self.per_turn_tokens) < window:
             return 1.0
-        baseline_min = min(self.per_turn_tokens[:window])
-        if baseline_min == 0:
+        baseline = self.effective_baseline
+        if baseline <= 0:
             return 1.0
         peak = 1.0
         for i in range(len(self.per_turn_tokens) - window + 1):
             avg = sum(self.per_turn_tokens[i:i + window]) / window
-            w = avg / baseline_min
+            w = avg / baseline
             if w > peak:
                 peak = w
         return max(1.0, round(peak, 1))
@@ -309,6 +329,15 @@ def collect_all_sessions() -> list[SessionSummary]:
             totals = _quick_token_sum(jsonl_file)
             project_name = _extract_project_name(cwd) if cwd else project_dir.name
 
+            # Auto-calibration: record baseline and get calibrated one
+            per_turn = totals["per_turn_tokens"]
+            project_slug = path_to_slug(cwd) if cwd else project_dir.name
+            if len(per_turn) >= 5:
+                session_bl = min(per_turn[:5])
+                if session_bl > 0:
+                    record_baseline(project_slug, session_id, session_bl)
+            calibrated = get_calibrated_baseline(project_slug)
+
             summaries.append(SessionSummary(
                 session_id=session_id,
                 project=project_name,
@@ -323,7 +352,8 @@ def collect_all_sessions() -> list[SessionSummary]:
                 cache_creation=totals["cache_creation"],
                 raw_input=totals["input"],
                 turns=totals["turns"],
-                per_turn_tokens=totals["per_turn_tokens"],
+                per_turn_tokens=per_turn,
+                calibrated_baseline=calibrated,
             ))
 
     summaries.sort(key=lambda s: (not s.is_active, -s.started_at.timestamp()))

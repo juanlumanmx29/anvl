@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows
@@ -15,139 +16,172 @@ if sys.platform == "win32":
         except Exception:
             pass
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
-from .analyzer import SessionMetrics, analyze_session, format_tokens
-from .config import load_config
-from .parser import SessionData, parse_session_file
+from .analyzer import format_tokens
+from .calibration import get_calibrated_baseline
+from .config import load_config, path_to_slug
 from .sessions import collect_all_sessions, compute_savings
 
 
-def build_monitor_panel(
-    metrics: SessionMetrics, session: SessionData, config: dict
-) -> Panel:
-    """Build a compact monitor panel with health percentage."""
-    color = metrics.semaphore
-    pct = metrics.health_pct
-
-    title = metrics.ai_title or "Untitled"
-    if len(title) > 45:
-        title = title[:42] + "..."
-
-    # Health bar: 20 chars
-    bar_len = 20
+def _health_bar(pct: int, color: str, bar_len: int = 15) -> str:
+    """Render a colored health bar."""
     filled = int(pct / 100 * bar_len)
-    bar = f"[{color}]{'█' * filled}{'░' * (bar_len - filled)}[/{color}]"
-
-    lines = [
-        "",
-        f'  Session: [bold]"{title}"[/bold]',
-        f"  Branch: [dim]{session.git_branch or '-'}[/dim]  |  "
-        f"Turns: [bold]{metrics.turn_count}[/bold]  |  "
-        f"Input: [bold]{format_tokens(metrics.total_input_tokens)}[/bold]  |  "
-        f"Output: [bold]{format_tokens(metrics.total_output_tokens)}[/bold]",
-        "",
-        f"  Health: {bar} [{color}][bold]{pct}%[/bold][/{color}]  "
-        f"({metrics.waste_factor:.1f}x waste)",
-        f"  [dim]Baseline: {format_tokens(metrics.baseline_per_turn)}/turn | "
-        f"Current: {format_tokens(metrics.current_per_turn)}/turn[/dim]",
-        "",
-    ]
-
-    return Panel(
-        "\n".join(lines),
-        title="ANVL - IronDevz",
-        subtitle="Ctrl+C to exit",
-        border_style=color,
-    )
+    return f"[{color}]{'█' * filled}{'░' * (bar_len - filled)}[/{color}]"
 
 
-def build_sessions_table() -> tuple[Table, str]:
-    """Build a compact table of all active sessions + savings summary."""
+def _elapsed(started_at: datetime) -> str:
+    """Human-readable elapsed time."""
+    delta = datetime.now(timezone.utc) - started_at
+    total_secs = int(delta.total_seconds())
+    if total_secs < 60:
+        return f"{total_secs}s"
+    if total_secs < 3600:
+        return f"{total_secs // 60}m"
+    hours = total_secs // 3600
+    mins = (total_secs % 3600) // 60
+    return f"{hours}h {mins}m"
+
+
+def build_monitor_display() -> Group:
+    """Build the unified monitor display — one table with all session info."""
     summaries = collect_all_sessions()
     active = [s for s in summaries if s.is_active]
 
+    # Header stats
+    total_input = sum(s.total_input for s in active)
+    total_output = sum(s.total_output for s in active)
+    mature = [s for s in active if s.turns >= 5]
+    worst_waste = max((s.waste_factor for s in mature), default=0)
+    worst_health = min((s.health_pct for s in mature), default=100)
+    worst_color = "green" if worst_health >= 60 else ("yellow" if worst_health >= 30 else "red")
+
+    worst_str = f"[{worst_color}][bold]{worst_waste:.1f}x[/bold][/{worst_color}]" if mature else "[dim]--[/dim]"
+    header = (
+        f"  Active: [bold]{len(active)}[/bold]  │  "
+        f"Total Input: [bold]{format_tokens(total_input)}[/bold]  │  "
+        f"Total Output: [bold]{format_tokens(total_output)}[/bold]  │  "
+        f"Worst: {worst_str}"
+    )
+
+    # Sessions table
     table = Table(
-        title="Active Sessions",
         show_header=True,
         header_style="bold",
         expand=True,
         border_style="dim",
+        pad_edge=True,
+        padding=(0, 1),
     )
-    table.add_column("", width=2)
-    table.add_column("Project", max_width=18)
-    table.add_column("Title", max_width=25)
-    table.add_column("Turns", justify="right", width=6)
-    table.add_column("Input", justify="right", width=8)
-    table.add_column("Output", justify="right", width=8)
-    table.add_column("Health", width=12)
+    table.add_column("", width=1)
+    table.add_column("Project", max_width=14, no_wrap=True)
+    table.add_column("Title", max_width=22, no_wrap=True)
+    table.add_column("Turns", justify="right", width=5)
+    table.add_column("Input", justify="right", width=7)
+    table.add_column("Output", justify="right", width=7)
+    table.add_column("Baseline", justify="right", width=8)
+    table.add_column("Current", justify="right", width=8)
+    table.add_column("Waste", justify="right", width=5)
+    table.add_column("Health", width=22, no_wrap=True)
+    table.add_column("Time", justify="right", width=5)
 
     if not active:
-        table.add_row("", "[dim]No active sessions[/dim]", "", "", "", "", "")
-        return table, ""
-
-    for s in active:
-        color = s.efficiency
-        pct = s.health_pct
-        dot = f"[{color}]*[/{color}]"
-        health_str = f"[{color}]{pct}%[/{color}]"
-
         table.add_row(
-            dot,
-            s.project[:18],
-            (s.ai_title or "Untitled")[:25],
-            str(s.turns),
-            format_tokens(s.total_input),
-            format_tokens(s.total_output),
-            health_str,
+            "", "[dim]No active sessions[/dim]",
+            "", "", "", "", "", "", "", "", "",
         )
+    else:
+        for s in active:
+            color = s.efficiency
+            pct = s.health_pct
+            too_new = s.turns < 5
+            dot = f"[{color}]●[/{color}]"
 
-    # Compute savings across all sessions
+            if too_new:
+                health_str = "[dim]  waiting…  --[/dim]"
+                waste_str = "[dim] --[/dim]"
+            else:
+                bar = _health_bar(pct, color, bar_len=10)
+                health_str = f"{bar} [{color}]{pct:>3}%[/{color}]"
+                waste_str = f"[{color}]{s.waste_factor:.1f}x[/{color}]"
+
+            # Baseline info
+            bl = s.effective_baseline
+            calibrated = s.calibrated_baseline
+            if calibrated and calibrated > 0:
+                bl_str = f"[cyan]{format_tokens(bl)}[/cyan]"  # cyan = calibrated
+            elif bl > 0:
+                bl_str = f"{format_tokens(bl)}"
+            else:
+                bl_str = "[dim]-[/dim]"
+
+            # Current avg (last 5 turns)
+            window = 5
+            if len(s.per_turn_tokens) >= window:
+                current_avg = sum(s.per_turn_tokens[-window:]) // window
+                cur_str = format_tokens(current_avg)
+            elif s.per_turn_tokens:
+                current_avg = sum(s.per_turn_tokens) // len(s.per_turn_tokens)
+                cur_str = format_tokens(current_avg)
+            else:
+                cur_str = "[dim]-[/dim]"
+
+            elapsed = _elapsed(s.started_at)
+
+            table.add_row(
+                dot,
+                s.project[:14],
+                (s.ai_title or "Untitled")[:22],
+                str(s.turns),
+                format_tokens(s.total_input),
+                format_tokens(s.total_output),
+                bl_str,
+                cur_str,
+                waste_str,
+                health_str,
+                f"[dim]{elapsed}[/dim]",
+            )
+
+    # Savings footer
     savings = compute_savings(summaries)
     saved_pct = savings["pct_saved"]
-    if saved_pct > 0:
-        savings_text = f"[dim]Estimated savings from session rotation: [green]{saved_pct:.0f}%[/green] quota saved[/dim]"
-    else:
-        savings_text = ""
 
-    return table, savings_text
+    parts: list = []
+
+    # Wrap header + table in a panel
+    panel_content = Group(Text.from_markup(header), Text(""), table)
+    border_color = worst_color if active else "dim"
+    panel = Panel(
+        panel_content,
+        title="ANVL Monitor — IronDevz",
+        subtitle="[dim]Ctrl+C to exit  │  Refreshes every 2s  │  [cyan]Cyan[/cyan] baseline = calibrated[/dim]",
+        border_style=border_color,
+    )
+    parts.append(panel)
+
+    if saved_pct > 0:
+        parts.append(Text.from_markup(
+            f"  [dim]Estimated savings from session rotation: [green]{saved_pct:.0f}%[/green] quota saved[/dim]"
+        ))
+
+    return Group(*parts)
 
 
 def monitor_session(session_path: Path, refresh_interval: float = 2.0) -> None:
     """Main monitor loop with rich Live display."""
     console = Console()
-    config = load_config()
-    last_mtime = 0.0
 
-    console.print(f"[dim]Monitoring: {session_path}[/dim]")
     console.print("[dim]Press Ctrl+C to exit[/dim]\n")
-
-    session = parse_session_file(session_path)
-    metrics = analyze_session(session)
 
     with Live(console=console, refresh_per_second=1) as live:
         try:
             while True:
-                current_mtime = session_path.stat().st_mtime
-                if current_mtime != last_mtime:
-                    last_mtime = current_mtime
-                    session = parse_session_file(session_path)
-                    metrics = analyze_session(session)
-
-                panel = build_monitor_panel(metrics, session, config)
-                sessions_table, savings_text = build_sessions_table()
-
-                from rich.console import Group
-                from rich.text import Text
-
-                parts = [panel, sessions_table]
-                if savings_text:
-                    parts.append(Text.from_markup(savings_text))
-                live.update(Group(*parts))
-
+                display = build_monitor_display()
+                live.update(display)
                 time.sleep(refresh_interval)
         except KeyboardInterrupt:
             console.print("\n[dim]Monitor stopped.[/dim]")

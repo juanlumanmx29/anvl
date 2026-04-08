@@ -58,13 +58,19 @@ def _total_tokens(usage: TokenUsage) -> int:
     )
 
 
-def compute_waste_factor(per_turn: list[TurnMetrics], window: int = BASELINE_WINDOW) -> tuple[float, int, int]:
-    """Compute waste as current_avg / baseline_min.
+def compute_waste_factor(
+    per_turn: list[TurnMetrics],
+    window: int = BASELINE_WINDOW,
+    calibrated_baseline: int | None = None,
+) -> tuple[float, int, int]:
+    """Compute waste as current_avg / baseline.
 
-    Baseline is the MINIMUM tokens/turn from the first `window` turns.
-    This represents the "fresh session" cost — the cheapest a turn can be
-    in this environment.  Using min instead of avg prevents inflated starts
-    (e.g., reading handoff.md) from masking real waste.
+    Baseline selection (auto-calibration):
+      1. If calibrated_baseline is provided (from historical sessions), use it.
+      2. Otherwise, fall back to min(first `window` turns) of this session.
+
+    Calibrated baselines are the median of baselines across all sessions
+    in the same project, making waste measurements stable and comparable.
 
     Returns (waste_factor, baseline_per_turn, current_per_turn).
     With < window turns, waste is always 1.0.
@@ -76,7 +82,8 @@ def compute_waste_factor(per_turn: list[TurnMetrics], window: int = BASELINE_WIN
             return 1.0, avg, avg
         return 1.0, 0, 0
 
-    baseline_min = min(t.total_tokens for t in meaningful[:window])
+    session_baseline = min(t.total_tokens for t in meaningful[:window])
+    baseline_min = calibrated_baseline if calibrated_baseline else session_baseline
 
     if baseline_min == 0:
         current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
@@ -148,7 +155,7 @@ def compute_trend(per_turn: list[TurnMetrics], window: int = 5) -> str:
     return "stable"
 
 
-def analyze_session(session: SessionData) -> SessionMetrics:
+def analyze_session(session: SessionData, calibrated_baseline: int | None = None) -> SessionMetrics:
     """Compute full metrics for a session."""
     metrics = SessionMetrics(
         session_id=session.session_id,
@@ -189,7 +196,9 @@ def analyze_session(session: SessionData) -> SessionMetrics:
         metrics.total_cache_creation += u.cache_creation_input_tokens
 
     # Waste factor: current tokens/turn vs baseline tokens/turn
-    waste, baseline, current = compute_waste_factor(metrics.per_turn)
+    waste, baseline, current = compute_waste_factor(
+        metrics.per_turn, calibrated_baseline=calibrated_baseline
+    )
     metrics.waste_factor = waste
     metrics.baseline_per_turn = baseline
     metrics.current_per_turn = current

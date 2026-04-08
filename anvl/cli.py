@@ -163,13 +163,30 @@ def cmd_handoff(args: argparse.Namespace) -> None:
 def cmd_monitor(args: argparse.Namespace) -> None:
     """Launch live terminal monitor."""
     from .monitor import monitor_session
+    from .sessions import collect_all_sessions
 
     cwd = Path(args.cwd) if args.cwd else None
     result = find_active_session(cwd)
     if result is None:
         result = find_latest_session(cwd)
+
+    # Fallback: find any active session across all projects
     if result is None:
-        console.print("[red]No session found.[/red]")
+        summaries = collect_all_sessions()
+        active = [s for s in summaries if s.is_active]
+        if active:
+            from .config import find_project_dir
+            for s in active:
+                if s.cwd:
+                    project_dir = find_project_dir(Path(s.cwd))
+                    if project_dir:
+                        candidate = project_dir / f"{s.session_id}.jsonl"
+                        if candidate.exists():
+                            result = (candidate, s.session_id)
+                            break
+
+    if result is None:
+        console.print("[red]No session found. Start a Claude Code session first.[/red]")
         sys.exit(1)
 
     jsonl_path, _ = result
@@ -250,10 +267,11 @@ def cmd_init(args: argparse.Namespace) -> None:
         "[bold]Quick start:[/bold]\n\n"
         "  [cyan]anvl status[/cyan]      - Check current session health\n"
         "  [cyan]anvl sessions[/cyan]    - See all sessions with usage stats\n"
-        "  [cyan]anvl monitor[/cyan]     - Live terminal monitor\n"
-        "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
+        "  [cyan]anvl monitor[/cyan]     - Live terminal monitor (works from anywhere)\n"
+        "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n"
+        "  [cyan]anvl calibrate[/cyan]   - View auto-calibration baselines\n\n"
         "ANVL will now alert you when a session gets inflated.\n"
-        "Sessions are blocked automatically when critically inflated.",
+        "Auto-calibration activates after 3 sessions per project.",
         title="Setup complete",
         border_style="green",
     ))
@@ -357,6 +375,100 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     console.print(f"\n[dim]Active: {active_count} | Total: {total} sessions{extra}[/dim]")
 
 
+def cmd_calibrate(args: argparse.Namespace) -> None:
+    """View or reset auto-calibration data."""
+    from .calibration import get_all_calibration, get_calibration_info, reset_calibration
+    from .config import path_to_slug
+
+    if args.reset:
+        if args.project:
+            slug = path_to_slug(args.project)
+            reset_calibration(slug)
+            console.print(f"[green]Calibration reset for project:[/green] {slug}")
+        else:
+            reset_calibration()
+            console.print("[green]All calibration data reset.[/green]")
+        return
+
+    if args.project:
+        slug = path_to_slug(args.project)
+        info = get_calibration_info(slug)
+        if info is None:
+            console.print(f"[yellow]No calibration data for:[/yellow] {slug}")
+            return
+        _print_calibration_project(slug, info)
+    else:
+        all_data = get_all_calibration()
+        if not all_data:
+            console.print("[yellow]No calibration data yet.[/yellow]")
+            console.print("[dim]Calibration builds automatically as you use sessions (needs 3+ sessions per project).[/dim]")
+            return
+
+        table = Table(title="Auto-Calibration", show_header=True, header_style="bold", expand=True)
+        table.add_column("Project", max_width=30)
+        table.add_column("Sessions", justify="right", width=8)
+        table.add_column("Calibrated Baseline", justify="right", width=18)
+        table.add_column("Status", width=14)
+        table.add_column("Baselines (range)", width=20)
+
+        for slug, proj in all_data.items():
+            baselines = proj.get("baselines", [])
+            calibrated = proj.get("calibrated_baseline")
+            count = proj.get("session_count", 0)
+            min_needed = 3
+
+            if calibrated:
+                status = "[green]Active[/green]"
+                cal_str = f"[bold]{format_tokens(calibrated)}[/bold]/turn"
+            else:
+                status = f"[yellow]{count}/{min_needed}[/yellow]"
+                cal_str = "[dim]Collecting...[/dim]"
+
+            if baselines:
+                range_str = f"{format_tokens(min(baselines))} — {format_tokens(max(baselines))}"
+            else:
+                range_str = "-"
+
+            # Shorten slug for display
+            display_name = slug.split("-")[-1] if "-" in slug else slug
+            if len(display_name) > 30:
+                display_name = display_name[:27] + "..."
+
+            table.add_row(display_name, str(count), cal_str, status, range_str)
+
+        console.print(table)
+        console.print("\n[dim]Calibration stabilizes waste measurements by using the median baseline across sessions.[/dim]")
+        console.print("[dim]Use [cyan]anvl calibrate --reset[/cyan] to clear all data.[/dim]")
+
+
+def _print_calibration_project(slug: str, info: dict) -> None:
+    """Print detailed calibration info for one project."""
+    calibrated = info.get("calibrated_baseline")
+    baselines = info.get("baselines", [])
+    count = info.get("session_count", 0)
+
+    lines = [
+        f"Project: [bold]{slug}[/bold]",
+        f"Sessions recorded: [bold]{count}[/bold]",
+    ]
+
+    if calibrated:
+        lines.append(f"Calibrated baseline: [bold green]{format_tokens(calibrated)}[/bold green]/turn")
+        lines.append(f"Range: {format_tokens(min(baselines))} — {format_tokens(max(baselines))}")
+        lines.append(f"Last updated: [dim]{info.get('last_updated', 'unknown')}[/dim]")
+    else:
+        remaining = info.get("min_needed", 3) - count
+        lines.append(f"[yellow]Need {remaining} more session(s) to calibrate[/yellow]")
+
+    if baselines:
+        lines.append("")
+        lines.append("Per-session baselines:")
+        for i, bl in enumerate(baselines):
+            lines.append(f"  {i + 1}. {format_tokens(bl)}/turn")
+
+    console.print(Panel("\n".join(lines), title="Calibration Detail", border_style="blue"))
+
+
 def cmd_hook(args: argparse.Namespace) -> None:
     """Hook entrypoint called by Claude Code (not user-facing)."""
     if args.event == "session-start":
@@ -402,6 +514,11 @@ def main() -> None:
     subparsers.add_parser("install", help="Install ANVL hook in Claude Code")
     subparsers.add_parser("uninstall", help="Remove ANVL hook from Claude Code")
 
+    # calibrate
+    sp = subparsers.add_parser("calibrate", help="View/reset auto-calibration data")
+    sp.add_argument("--reset", action="store_true", help="Reset calibration data")
+    sp.add_argument("--project", help="Project path or slug (default: all)")
+
     # hook (hidden - called by Claude Code)
     sp = subparsers.add_parser("hook")
     sp.add_argument("event", choices=["post-tool-use", "user-prompt-submit", "session-start"])
@@ -419,6 +536,7 @@ def main() -> None:
         "monitor": cmd_monitor,
         "sessions": cmd_sessions,
         "report": cmd_report,
+        "calibrate": cmd_calibrate,
         "install": cmd_install,
         "uninstall": cmd_uninstall,
         "hook": cmd_hook,
