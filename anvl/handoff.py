@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .analyzer import SessionMetrics, format_tokens
-from .parser import SessionData, Turn
+from .parser import SessionData
 
 
 def extract_files_touched(session: SessionData) -> dict[str, list[str]]:

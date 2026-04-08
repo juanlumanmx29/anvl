@@ -152,12 +152,11 @@ def hook_entrypoint(can_block: bool = True) -> None:
         return
 
     config = load_config()
-    block_threshold = config.get("handoff_waste_threshold", 10)
     min_turns = config.get("min_turns_for_alert", 5)
 
     cwd = Path(hook_input.get("cwd", "")) if hook_input.get("cwd") else Path.cwd()
     from .parser import find_active_session
-    from .sessions import _quick_token_sum, SessionSummary
+    from .sessions import SessionSummary, _quick_token_sum
 
     result = find_active_session(cwd)
     if result is None:
@@ -238,7 +237,8 @@ def hook_entrypoint(can_block: bool = True) -> None:
         # Yellow zone: informational
         print(
             f"\n[ANVL] Session health: {health_pct}% — each message costs ~{waste:.1f}x a fresh session.\n"
-            f"       Baseline: ~{format_tokens(baseline)}/turn → Current: ~{format_tokens(current_avg)}/turn ({turns} turns)\n"
+            f"       Baseline: ~{format_tokens(baseline)}/turn → "
+            f"Current: ~{format_tokens(current_avg)}/turn ({turns} turns)\n"
             f"       Consider starting a new conversation soon.\n"
             f'       (Tip: "anvl bypass" to skip this check)\n',
             file=sys.stdout,
@@ -248,9 +248,9 @@ def hook_entrypoint(can_block: bool = True) -> None:
 def _generate_handoff_quiet(jsonl_path: Path) -> Path | None:
     """Generate handoff.md without printing anything."""
     try:
-        from .parser import parse_session_file
         from .analyzer import analyze_session
         from .handoff import generate_handoff
+        from .parser import parse_session_file
 
         session = parse_session_file(jsonl_path)
         metrics = analyze_session(session)

@@ -9,7 +9,7 @@ not an abstract input/output ratio.  A fresh session starts at 1x.
 
 from dataclasses import dataclass, field
 
-from .parser import SessionData, TokenUsage, Turn
+from .parser import SessionData, TokenUsage
 
 # Window size for baseline and current averages
 BASELINE_WINDOW = 5
@@ -92,14 +92,12 @@ def compute_waste_factor(
     # Peak waste: check every possible window position, keep the worst.
     # Health should never improve — once inflated, it stays inflated.
     peak_waste = 1.0
-    peak_avg = baseline_min
     for i in range(len(meaningful) - window + 1):
         w = meaningful[i:i + window]
         avg = sum(t.total_tokens for t in w) // len(w)
         w_factor = avg / baseline_min
         if w_factor > peak_waste:
             peak_waste = w_factor
-            peak_avg = avg
 
     current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
     # Use peak waste but show current avg for display

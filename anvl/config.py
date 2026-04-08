@@ -1,8 +1,6 @@
 """Configuration and path resolution for ANVL."""
 
 import json
-import os
-import platform
 from pathlib import Path
 
 CLAUDE_HOME = Path.home() / ".claude"

@@ -4,7 +4,6 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 # Ensure UTF-8 output on Windows
 if sys.platform == "win32":
@@ -23,8 +22,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .analyzer import format_tokens
-from .calibration import get_calibrated_baseline, get_calibration_info, DEFAULT_BASELINE
-from .config import load_config
+from .calibration import DEFAULT_BASELINE, get_calibration_info
 from .sessions import collect_all_sessions, compute_savings
 
 ANVL_BANNER = (

@@ -1,5 +1,10 @@
 # ANVL
 
+[![CI](https://github.com/jumontes/anvl/actions/workflows/ci.yml/badge.svg)](https://github.com/jumontes/anvl/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/anvl.svg)](https://pypi.org/project/anvl/)
+[![Python 3.11+](https://img.shields.io/pypi/pyversions/anvl.svg)](https://pypi.org/project/anvl/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Session monitor for Claude Code — saves your quota by detecting inflated sessions.**
 
 Developed by **IronDevz**

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .calibration import get_calibrated_baseline, record_baseline
-from .config import CLAUDE_HOME, get_projects_dir, get_sessions_dir, load_config
+from .config import get_projects_dir, get_sessions_dir
 
 # Simple mtime-based cache for collect_all_sessions
 _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
@@ -415,7 +415,9 @@ def collect_all_sessions() -> list[SessionSummary]:
     return summaries
 
 
-def compute_window_usage(summaries: list[SessionSummary], window_hours: int = 5) -> tuple[float, float, datetime | None]:
+def compute_window_usage(
+    summaries: list[SessionSummary], window_hours: int = 5,
+) -> tuple[float, float, datetime | None]:
     """Compute weighted token usage within the rolling window.
 
     Returns (weighted_total, weighted_limit_fraction, window_start).
@@ -447,6 +449,7 @@ def compute_savings(summaries: list[SessionSummary]) -> dict:
     Also computes total waste = actual input above baseline cost.
     """
     from collections import defaultdict
+
     from .calibration import get_calibrated_baseline
 
     global_bl = get_calibrated_baseline() or 0

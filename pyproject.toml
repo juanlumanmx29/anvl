@@ -29,6 +29,9 @@ classifiers = [
 ]
 dependencies = ["rich>=13.0"]
 
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
 [project.urls]
 Homepage = "https://github.com/jumontes/anvl"
 Repository = "https://github.com/jumontes/anvl"
@@ -45,3 +48,10 @@ include = ["anvl*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

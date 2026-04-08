@@ -7,10 +7,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
-from anvl.cli import main
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -87,7 +83,7 @@ class TestCLIHandoff:
 class TestCLISessions:
     def test_sessions_empty_exits_nonzero(self):
         """Sessions with no Claude home should handle gracefully."""
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             result = run_anvl("sessions")
             # May exit 1 if no sessions found, or 0 if empty
             assert result.returncode in (0, 1)
@@ -109,7 +105,7 @@ class TestCLIHookInstall:
             assert "PostToolUse" in settings["hooks"]
             hooks = settings["hooks"]["PostToolUse"]
             assert len(hooks) == 1
-            assert hooks[0]["hooks"][0]["command"] == "anvl hook user-prompt-submit"
+            assert hooks[0]["hooks"][0]["command"] == "anvl hook post-tool-use"
 
     def test_uninstall_then_install(self):
         """Uninstall followed by install should leave exactly one hook."""

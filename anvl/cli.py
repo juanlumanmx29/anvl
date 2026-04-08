@@ -18,13 +18,11 @@ if sys.platform == "win32":
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from .analyzer import SessionMetrics, analyze_session, format_tokens
 from .parser import (
     find_active_session,
     find_latest_session,
-    find_project_sessions,
     parse_session_file,
 )
 
@@ -211,7 +209,7 @@ def _write_claude_md(cwd: Path | None = None) -> Path | None:
 
 def cmd_init(args: argparse.Namespace) -> None:
     """First-time setup: create config, install hooks, write CLAUDE.md."""
-    from .config import save_default_config, ANVL_CONFIG_FILE
+    from .config import ANVL_CONFIG_FILE, save_default_config
     from .hooks import install_hook
 
     console.print(Panel(
@@ -270,8 +268,8 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
 
 def cmd_sessions(args: argparse.Namespace) -> None:
     """Show all Claude sessions across projects with usage stats."""
-    from .sessions import collect_all_sessions
     from .analyzer import format_tokens
+    from .sessions import collect_all_sessions
 
     console.print("[dim]Scanning sessions...[/dim]")
     summaries = collect_all_sessions()
@@ -284,9 +282,10 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     active = [s for s in summaries if s.is_active]
     inflated = [s for s in active if s.waste_factor > 5]
 
+    color = "red" if inflated else "green"
     header_lines = [
         f"Active sessions: [bold]{len(active)}[/bold] | "
-        f"Inflated (>5x cost): [bold {'red' if inflated else 'green'}]{len(inflated)}[/bold {'red' if inflated else 'green'}]",
+        f"Inflated (>5x cost): [bold {color}]{len(inflated)}[/bold {color}]",
     ]
     if inflated:
         worst = max(inflated, key=lambda s: s.waste_factor)
@@ -309,7 +308,8 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     table.add_column("Started", width=16)
 
     # Filter sessions
-    from datetime import datetime as dt, timezone as tz
+    from datetime import datetime as dt
+    from datetime import timezone as tz
     now = dt.now(tz.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -352,14 +352,19 @@ def cmd_sessions(args: argparse.Namespace) -> None:
 def cmd_calibrate(args: argparse.Namespace) -> None:
     """Scan sessions, view, export, import, or reset calibration data."""
     from .calibration import (
-        DEFAULT_BASELINE, export_calibration, get_calibrated_baseline,
-        get_calibration_info, import_calibration, reset_calibration,
+        DEFAULT_BASELINE,
+        export_calibration,
+        get_calibrated_baseline,
+        get_calibration_info,
+        import_calibration,
+        reset_calibration,
     )
 
     if args.reset:
         reset_calibration()
         console.print("[green]Calibration data reset.[/green]")
-        console.print(f"[dim]Default baseline ({format_tokens(DEFAULT_BASELINE)}/turn) will be used until recalibrated.[/dim]")
+        bl_str = format_tokens(DEFAULT_BASELINE)
+        console.print(f"[dim]Default baseline ({bl_str}/turn) will be used until recalibrated.[/dim]")
         return
 
     if getattr(args, "import_file", None):
@@ -379,11 +384,12 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         export_calibration(path)
         info = get_calibration_info()
         console.print(f"[green]Calibration exported to:[/green] {path}")
-        console.print(f"[dim]{info['session_count']} sessions, baseline: {format_tokens(get_calibrated_baseline())}/turn[/dim]")
+        bl_str = format_tokens(get_calibrated_baseline())
+        console.print(f"[dim]{info['session_count']} sessions, baseline: {bl_str}/turn[/dim]")
         return
 
     # Active scan: collect all sessions to record any missing baselines
-    from .sessions import collect_all_sessions, _session_cache
+    from .sessions import _session_cache, collect_all_sessions
     _session_cache["ts"] = 0  # invalidate cache to force fresh scan
     console.print("[dim]Scanning sessions...[/dim]")
     sessions = collect_all_sessions()
@@ -414,7 +420,11 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         lines.append(f"Default baseline: [dim]{format_tokens(DEFAULT_BASELINE)}/turn[/dim]")
 
     console.print(Panel("\n".join(lines), title="Global Calibration", border_style="cyan"))
-    console.print("[dim]Export: [cyan]anvl calibrate --export file.json[/cyan]  │  Import: [cyan]anvl calibrate --import file.json[/cyan]  │  Reset: [cyan]anvl calibrate --reset[/cyan][/dim]")
+    console.print(
+        "[dim]Export: [cyan]anvl calibrate --export file.json[/cyan]  │  "
+        "Import: [cyan]anvl calibrate --import file.json[/cyan]  │  "
+        "Reset: [cyan]anvl calibrate --reset[/cyan][/dim]"
+    )
 
 
 def cmd_hook(args: argparse.Namespace) -> None:
