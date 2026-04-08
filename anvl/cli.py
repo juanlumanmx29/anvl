@@ -20,6 +20,14 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .analyzer import SessionMetrics, analyze_session, format_tokens
+from .branding import (
+    CYAN,
+    DIM,
+    styled_banner,
+    styled_subtitle,
+    styled_tagline,
+    version_text,
+)
 from .parser import (
     find_active_session,
     find_latest_session,
@@ -209,15 +217,22 @@ def _write_claude_md(cwd: Path | None = None) -> Path | None:
 
 def cmd_init(args: argparse.Namespace) -> None:
     """First-time setup: create config, install hooks, write CLAUDE.md."""
+    from rich.align import Align
+    from rich.console import Group
+    from rich.text import Text
+
     from .config import ANVL_CONFIG_FILE, save_default_config
     from .hooks import install_hook
 
     console.print(
         Panel(
-            "[bold]Welcome to ANVL[/bold]\n"
-            "Session monitor and handoff tool for Claude Code\n"
-            "[dim]Developed by IronDevz[/dim]",
-            border_style="blue",
+            Group(
+                Align.center(styled_banner()),
+                Align.center(styled_tagline()),
+                Text(""),
+                Align.center(Text("Session monitor and handoff tool for Claude Code", style=DIM)),
+            ),
+            border_style=CYAN,
         )
     )
 
@@ -247,8 +262,8 @@ def cmd_init(args: argparse.Namespace) -> None:
             "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
             "ANVL will now alert you when a session gets inflated.\n"
             "Run [cyan]anvl calibrate[/cyan] to build your baseline from existing sessions.",
-            title="Setup complete",
-            border_style="green",
+            title="[bold]Setup complete[/bold]",
+            border_style=CYAN,
         )
     )
 
@@ -299,7 +314,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
         )
 
     border = "red" if inflated else "green"
-    console.print(Panel("\n".join(header_lines), title="ANVL — Sessions", border_style=border))
+    console.print(Panel("\n".join(header_lines), title="[bold]ANVL — Sessions[/bold]", border_style=border))
 
     # Sessions table
     table = Table(show_header=True, header_style="bold", expand=True)
@@ -451,12 +466,58 @@ def cmd_hook(args: argparse.Namespace) -> None:
         hook_entrypoint(can_block=False)
 
 
+COMMANDS_HELP = [
+    ("init", "First-time setup (config + hooks + CLAUDE.md)"),
+    ("status", "Show current session health metrics"),
+    ("sessions", "List all sessions with usage stats"),
+    ("monitor", "Live terminal dashboard"),
+    ("handoff", "Generate handoff.md for session rotation"),
+    ("calibrate", "Scan sessions and manage baseline calibration"),
+    ("report", "Generate report for all project sessions"),
+    ("install", "Install ANVL hook in Claude Code"),
+    ("uninstall", "Remove ANVL hook from Claude Code"),
+]
+
+
+def _print_styled_help() -> None:
+    """Print branded help instead of argparse default."""
+    from rich.align import Align
+    from rich.console import Group
+    from rich.text import Text
+
+    banner_group = Group(
+        Align.center(styled_banner()),
+        Align.center(styled_tagline()),
+        Align.center(styled_subtitle()),
+    )
+    console.print(Panel(banner_group, border_style=CYAN))
+
+    # Commands list
+    lines = Text()
+    lines.append("  Commands:\n\n", style="bold white")
+    for cmd, desc in COMMANDS_HELP:
+        lines.append(f"    anvl {cmd:<14s}", style=f"bold {CYAN}")
+        lines.append(f"{desc}\n", style=DIM)
+    lines.append("\n  Options:\n\n", style="bold white")
+    lines.append("    --cwd DIR         ", style=f"bold {CYAN}")
+    lines.append("Override working directory\n", style=DIM)
+    lines.append("    --version         ", style=f"bold {CYAN}")
+    lines.append("Show version and exit\n", style=DIM)
+    lines.append("\n  Run ", style=DIM)
+    lines.append("anvl <command> --help", style=f"bold {CYAN}")
+    lines.append(" for command-specific options.\n", style=DIM)
+    console.print(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="anvl",
         description="Session monitor and handoff tool for Claude Code",
+        add_help=False,
     )
     parser.add_argument("--cwd", help="Override working directory")
+    parser.add_argument("--version", action="store_true", help="Show version")
+    parser.add_argument("-h", "--help", action="store_true", help="Show help")
     subparsers = parser.add_subparsers(dest="command")
 
     # status
@@ -498,8 +559,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command is None:
-        parser.print_help()
+    if args.version:
+        console.print(version_text())
+        sys.exit(0)
+
+    if args.command is None or args.help:
+        _print_styled_help()
         sys.exit(0)
 
     commands = {

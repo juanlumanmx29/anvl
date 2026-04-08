@@ -19,6 +19,8 @@ def run_anvl(*args: str, cwd: str | None = None) -> subprocess.CompletedProcess:
         text=True,
         timeout=10,
         cwd=cwd,
+        encoding="utf-8",
+        errors="replace",
         env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
     )
 
