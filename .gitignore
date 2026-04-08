@@ -9,3 +9,5 @@ build/
 *.egg
 handoff.md
 .anvl/
+ascii-art.txt
+fire.py
