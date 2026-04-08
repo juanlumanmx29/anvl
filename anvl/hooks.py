@@ -176,6 +176,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
     window = 5
     if len(per_turn) >= window:
         import statistics as _stats
+
         session_bl = int(_stats.median(per_turn[:window]))
         if session_bl > 0:
             record_baseline(session_id, session_bl)
@@ -183,6 +184,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
 
     # Build a SessionSummary to reuse the exact same waste/health logic
     from datetime import datetime, timezone
+
     summary = SessionSummary(
         session_id=session_id,
         project="",
@@ -204,6 +206,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
 
     # Format cost explanation for all alert levels
     from .analyzer import format_tokens
+
     baseline = summary.effective_baseline
     if per_turn:
         window = min(5, len(per_turn))
@@ -261,14 +264,14 @@ def _generate_handoff_quiet(jsonl_path: Path) -> Path | None:
         return None
 
 
-def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0,
-                   current_avg: int = 0, baseline: int = 0) -> None:
+def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0, current_avg: int = 0, baseline: int = 0) -> None:
     """Auto-generate handoff and print blocking message.
 
     stderr = shown to user as the block reason (Claude Code displays this)
     stdout = injected as context into the conversation
     """
     from .analyzer import format_tokens
+
     output_path = _generate_handoff_quiet(jsonl_path)
 
     # stderr: the user sees this as the block message
@@ -303,5 +306,3 @@ def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0,
             'User can bypass with "anvl bypass" prefix.',
             file=sys.stdout,
         )
-
-

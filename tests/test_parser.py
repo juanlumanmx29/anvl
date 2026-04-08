@@ -41,11 +41,7 @@ def test_parse_inflated_session():
 
 def test_inflated_cache_read_grows():
     session = parse_session_file(FIXTURES / "inflated.jsonl")
-    cache_reads = [
-        t.usage.cache_read_input_tokens
-        for t in session.turns
-        if t.usage
-    ]
+    cache_reads = [t.usage.cache_read_input_tokens for t in session.turns if t.usage]
     # Cache read should be growing across turns
     assert cache_reads == sorted(cache_reads)
     assert cache_reads[-1] > cache_reads[0]

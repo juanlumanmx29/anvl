@@ -50,12 +50,7 @@ class SessionMetrics:
 
 def _total_tokens(usage: TokenUsage) -> int:
     """Total tokens for a turn (all input categories + output)."""
-    return (
-        usage.input_tokens
-        + usage.cache_read_input_tokens
-        + usage.cache_creation_input_tokens
-        + usage.output_tokens
-    )
+    return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
 
 
 def compute_waste_factor(
@@ -93,7 +88,7 @@ def compute_waste_factor(
     # Health should never improve — once inflated, it stays inflated.
     peak_waste = 1.0
     for i in range(len(meaningful) - window + 1):
-        w = meaningful[i:i + window]
+        w = meaningful[i : i + window]
         avg = sum(t.total_tokens for t in w) // len(w)
         w_factor = avg / baseline_min
         if w_factor > peak_waste:
@@ -137,7 +132,7 @@ def compute_trend(per_turn: list[TurnMetrics], window: int = 5) -> str:
         return "stable"
 
     recent = meaningful[-window:]
-    previous = meaningful[-window * 2:-window]
+    previous = meaningful[-window * 2 : -window]
 
     avg_recent = sum(t.total_tokens for t in recent) / len(recent)
     avg_prev = sum(t.total_tokens for t in previous) / len(previous)
@@ -194,9 +189,7 @@ def analyze_session(session: SessionData, calibrated_baseline: int | None = None
         metrics.total_cache_creation += u.cache_creation_input_tokens
 
     # Waste factor: current tokens/turn vs baseline tokens/turn
-    waste, baseline, current = compute_waste_factor(
-        metrics.per_turn, calibrated_baseline=calibrated_baseline
-    )
+    waste, baseline, current = compute_waste_factor(metrics.per_turn, calibrated_baseline=calibrated_baseline)
     metrics.waste_factor = waste
     metrics.baseline_per_turn = baseline
     metrics.current_per_turn = current

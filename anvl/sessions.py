@@ -19,9 +19,9 @@ _CACHE_TTL = 3.0  # seconds
 # These weights approximate real quota impact
 TOKEN_WEIGHTS = {
     "input": 1.0,
-    "cache_read": 0.1,       # Cache reads are ~90% cheaper
+    "cache_read": 0.1,  # Cache reads are ~90% cheaper
     "cache_creation": 1.25,  # Slightly more expensive than regular input
-    "output": 5.0,           # Output tokens cost ~5x input
+    "output": 5.0,  # Output tokens cost ~5x input
 }
 
 
@@ -93,7 +93,7 @@ class SessionSummary:
         window = min(5, len(tokens))
         peak = 1.0
         for i in range(len(tokens) - window + 1):
-            avg = sum(tokens[i:i + window]) / window
+            avg = sum(tokens[i : i + window]) / window
             w = avg / baseline
             if w > peak:
                 peak = w
@@ -153,7 +153,7 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
     Deduplicates by requestId — only the last record per API call is kept.
     """
     totals = {
-        "input": 0,        # raw input_tokens
+        "input": 0,  # raw input_tokens
         "cache_read": 0,
         "cache_creation": 0,
         "output": 0,
@@ -182,9 +182,7 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
                 rtype = record.get("type")
                 if rtype == "user":
                     content = record.get("message", {}).get("content", [])
-                    is_tool_result = any(
-                        isinstance(c, dict) and "tool_use_id" in c for c in content
-                    )
+                    is_tool_result = any(isinstance(c, dict) and "tool_use_id" in c for c in content)
                     if not is_tool_result:
                         # Save previous turn
                         if in_turn:
@@ -264,9 +262,9 @@ def _is_process_running(pid: int) -> bool:
     try:
         if os.name == "nt":
             import subprocess
+
             result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-                capture_output=True, text=True, timeout=3
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"], capture_output=True, text=True, timeout=3
             )
             output = result.stdout.lower()
             # Must be a node.exe or claude process, not a recycled PID
@@ -367,15 +365,9 @@ def collect_all_sessions() -> list[SessionSummary]:
             if started_ts:
                 started_at = datetime.fromtimestamp(started_ts / 1000, tz=timezone.utc)
             else:
-                started_at = datetime.fromtimestamp(
-                    jsonl_file.stat().st_mtime, tz=timezone.utc
-                )
+                started_at = datetime.fromtimestamp(jsonl_file.stat().st_mtime, tz=timezone.utc)
 
-            is_active = (
-                bool(pid)
-                and _is_process_running(pid)
-                and not _is_session_stale(jsonl_file)
-            )
+            is_active = bool(pid) and _is_process_running(pid) and not _is_session_stale(jsonl_file)
             ai_title = _get_ai_title(jsonl_file)
             totals = _quick_token_sum(jsonl_file)
             project_name = _extract_project_name(cwd) if cwd else project_dir.name
@@ -388,23 +380,25 @@ def collect_all_sessions() -> list[SessionSummary]:
                     record_baseline(session_id, session_bl)
             calibrated = get_calibrated_baseline()
 
-            summaries.append(SessionSummary(
-                session_id=session_id,
-                project=project_name,
-                cwd=cwd,
-                ai_title=ai_title or "Untitled",
-                pid=pid,
-                started_at=started_at,
-                is_active=is_active,
-                total_input=totals["input"] + totals["cache_read"] + totals["cache_creation"],
-                total_output=totals["output"],
-                cache_read=totals["cache_read"],
-                cache_creation=totals["cache_creation"],
-                raw_input=totals["input"],
-                turns=totals["turns"],
-                per_turn_tokens=per_turn,
-                calibrated_baseline=calibrated,
-            ))
+            summaries.append(
+                SessionSummary(
+                    session_id=session_id,
+                    project=project_name,
+                    cwd=cwd,
+                    ai_title=ai_title or "Untitled",
+                    pid=pid,
+                    started_at=started_at,
+                    is_active=is_active,
+                    total_input=totals["input"] + totals["cache_read"] + totals["cache_creation"],
+                    total_output=totals["output"],
+                    cache_read=totals["cache_read"],
+                    cache_creation=totals["cache_creation"],
+                    raw_input=totals["input"],
+                    turns=totals["turns"],
+                    per_turn_tokens=per_turn,
+                    calibrated_baseline=calibrated,
+                )
+            )
 
     summaries.sort(key=lambda s: (not s.is_active, -s.started_at.timestamp()))
 
@@ -416,7 +410,8 @@ def collect_all_sessions() -> list[SessionSummary]:
 
 
 def compute_window_usage(
-    summaries: list[SessionSummary], window_hours: int = 5,
+    summaries: list[SessionSummary],
+    window_hours: int = 5,
 ) -> tuple[float, float, datetime | None]:
     """Compute weighted token usage within the rolling window.
 

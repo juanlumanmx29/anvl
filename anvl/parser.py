@@ -17,11 +17,7 @@ class TokenUsage:
 
     @property
     def total_input(self) -> int:
-        return (
-            self.input_tokens
-            + self.cache_creation_input_tokens
-            + self.cache_read_input_tokens
-        )
+        return self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
 
 
 @dataclass
@@ -111,10 +107,7 @@ def _is_tool_result(record: dict) -> bool:
     if not content:
         return False
     # Tool results have content items with 'tool_use_id'
-    return any(
-        isinstance(c, dict) and "tool_use_id" in c
-        for c in content
-    )
+    return any(isinstance(c, dict) and "tool_use_id" in c for c in content)
 
 
 def parse_session_file(path: Path) -> SessionData:

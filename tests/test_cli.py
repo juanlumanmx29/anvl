@@ -52,7 +52,6 @@ class TestCLIHelp:
         assert "--interval" in result.stdout
 
 
-
 class TestCLIStatus:
     def test_status_no_project_exits_nonzero(self):
         """Status with no Claude project should exit 1."""
@@ -98,6 +97,7 @@ class TestCLIHookInstall:
 
             with patch("anvl.hooks.SETTINGS_PATH", settings_path):
                 from anvl.hooks import install_hook
+
                 install_hook()
 
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -115,6 +115,7 @@ class TestCLIHookInstall:
 
             with patch("anvl.hooks.SETTINGS_PATH", settings_path):
                 from anvl.hooks import install_hook, uninstall_hook
+
                 install_hook()
                 uninstall_hook()
                 install_hook()

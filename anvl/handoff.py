@@ -67,8 +67,7 @@ def extract_last_state(session: SessionData, n: int = 3) -> str:
             lines.append(f"**Assistant:** {assistant_text}")
         if turn.tool_uses:
             tools_str = ", ".join(
-                t.name + (f" ({_short_path(t.file_path)})" if t.file_path else "")
-                for t in turn.tool_uses[:5]
+                t.name + (f" ({_short_path(t.file_path)})" if t.file_path else "") for t in turn.tool_uses[:5]
             )
             if len(turn.tool_uses) > 5:
                 tools_str += f" (+{len(turn.tool_uses) - 5} more)"
@@ -142,19 +141,13 @@ def generate_handoff(
     lines.append("## Work completed")
     if files_touched:
         write_edit_files = {
-            fp: actions
-            for fp, actions in files_touched.items()
-            if any(a in ("Written", "Edited") for a in actions)
+            fp: actions for fp, actions in files_touched.items() if any(a in ("Written", "Edited") for a in actions)
         }
         if write_edit_files:
             lines.append("Files created or modified:")
             for fp, actions in write_edit_files.items():
                 lines.append(f"- `{_short_path(fp)}` ({', '.join(actions)})")
-        bash_entries = {
-            fp: actions
-            for fp, actions in files_touched.items()
-            if fp.startswith("[Bash]")
-        }
+        bash_entries = {fp: actions for fp, actions in files_touched.items() if fp.startswith("[Bash]")}
         if bash_entries:
             lines.append("\nCommands executed:")
             for fp, _ in list(bash_entries.items())[:10]:

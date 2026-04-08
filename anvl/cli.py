@@ -212,12 +212,14 @@ def cmd_init(args: argparse.Namespace) -> None:
     from .config import ANVL_CONFIG_FILE, save_default_config
     from .hooks import install_hook
 
-    console.print(Panel(
-        "[bold]Welcome to ANVL[/bold]\n"
-        "Session monitor and handoff tool for Claude Code\n"
-        "[dim]Developed by IronDevz[/dim]",
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            "[bold]Welcome to ANVL[/bold]\n"
+            "Session monitor and handoff tool for Claude Code\n"
+            "[dim]Developed by IronDevz[/dim]",
+            border_style="blue",
+        )
+    )
 
     # Step 1: Config
     save_default_config()
@@ -235,18 +237,20 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     # Step 4: Quick start guide
     console.print("")
-    console.print(Panel(
-        "[bold]Quick start:[/bold]\n\n"
-        "  [cyan]anvl calibrate[/cyan]   - Scan existing sessions and build your baseline\n"
-        "  [cyan]anvl status[/cyan]      - Check current session health\n"
-        "  [cyan]anvl sessions[/cyan]    - See all sessions with usage stats\n"
-        "  [cyan]anvl monitor[/cyan]     - Live terminal monitor (works from anywhere)\n"
-        "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
-        "ANVL will now alert you when a session gets inflated.\n"
-        "Run [cyan]anvl calibrate[/cyan] to build your baseline from existing sessions.",
-        title="Setup complete",
-        border_style="green",
-    ))
+    console.print(
+        Panel(
+            "[bold]Quick start:[/bold]\n\n"
+            "  [cyan]anvl calibrate[/cyan]   - Scan existing sessions and build your baseline\n"
+            "  [cyan]anvl status[/cyan]      - Check current session health\n"
+            "  [cyan]anvl sessions[/cyan]    - See all sessions with usage stats\n"
+            "  [cyan]anvl monitor[/cyan]     - Live terminal monitor (works from anywhere)\n"
+            "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
+            "ANVL will now alert you when a session gets inflated.\n"
+            "Run [cyan]anvl calibrate[/cyan] to build your baseline from existing sessions.",
+            title="Setup complete",
+            border_style="green",
+        )
+    )
 
 
 def cmd_install(args: argparse.Namespace) -> None:
@@ -310,6 +314,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     # Filter sessions
     from datetime import datetime as dt
     from datetime import timezone as tz
+
     now = dt.now(tz.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -390,6 +395,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     # Active scan: collect all sessions to record any missing baselines
     from .sessions import _session_cache, collect_all_sessions
+
     _session_cache["ts"] = 0  # invalidate cache to force fresh scan
     console.print("[dim]Scanning sessions...[/dim]")
     sessions = collect_all_sessions()
@@ -408,6 +414,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     if calibrated:
         import statistics
+
         lines.append(f"Global baseline: [bold cyan]{format_tokens(calibrated)}[/bold cyan]/turn (median)")
         lines.append(f"Range: {format_tokens(min(baselines))} — {format_tokens(max(baselines))}")
         if len(baselines) >= 4:
@@ -431,13 +438,16 @@ def cmd_hook(args: argparse.Namespace) -> None:
     """Hook entrypoint called by Claude Code (not user-facing)."""
     if args.event == "session-start":
         from .hooks import session_start_entrypoint
+
         session_start_entrypoint()
     elif args.event == "user-prompt-submit":
         from .hooks import hook_entrypoint
+
         hook_entrypoint(can_block=True)
     else:
         # PostToolUse: warn only, never block
         from .hooks import hook_entrypoint
+
         hook_entrypoint(can_block=False)
 
 

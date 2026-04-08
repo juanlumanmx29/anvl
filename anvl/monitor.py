@@ -103,14 +103,10 @@ def build_monitor_display() -> Group:
             dot = f"[{color}]●[/{color}]"
 
             if s.turns == 0:
-                session_lines.append(
-                    f"  {dot} {title:<40s}  [dim]waiting...[/dim]"
-                )
+                session_lines.append(f"  {dot} {title:<40s}  [dim]waiting...[/dim]")
             elif s.turns < 5:
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
-                session_lines.append(
-                    f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  [dim]warming up...[/dim]"
-                )
+                session_lines.append(f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  [dim]warming up...[/dim]")
             else:
                 bar = _health_bar(pct, color, bar_len=20)
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
@@ -127,17 +123,11 @@ def build_monitor_display() -> Group:
                     cur = _current_avg(s)
                     cost_str = f"~{format_tokens(bl)} → ~{format_tokens(cur)}/turn"
                     if pct < 10:
-                        session_lines.append(
-                            f"    [red]⚠ BLOCKED — {waste:.0f}x cost ({cost_str})[/red]"
-                        )
+                        session_lines.append(f"    [red]⚠ BLOCKED — {waste:.0f}x cost ({cost_str})[/red]")
                     elif pct < 30:
-                        session_lines.append(
-                            f"    [red]⚠ INFLATED — {waste:.0f}x cost ({cost_str})[/red]"
-                        )
+                        session_lines.append(f"    [red]⚠ INFLATED — {waste:.0f}x cost ({cost_str})[/red]")
                     else:
-                        session_lines.append(
-                            f"    [yellow]● warming — {waste:.1f}x cost ({cost_str})[/yellow]"
-                        )
+                        session_lines.append(f"    [yellow]● warming — {waste:.1f}x cost ({cost_str})[/yellow]")
 
     # Compose panel content
     content_parts = [
@@ -169,10 +159,11 @@ def build_monitor_display() -> Group:
             footer_parts.append(f"[red]{format_tokens(wasted)}[/red] wasted by inflation")
         parts.append(Text.from_markup(f"  {' │ '.join(footer_parts)}"))
 
-    parts.append(Text.from_markup(
-        "  [dim]% = session health (100% fresh, 0% depleted) │ "
-        "Nx = cost multiplier vs fresh session[/dim]"
-    ))
+    parts.append(
+        Text.from_markup(
+            "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier vs fresh session[/dim]"
+        )
+    )
     parts.append(Text.from_markup("  [dim]IronDevz[/dim]"))
 
     return Group(*parts)

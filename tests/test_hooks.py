@@ -49,11 +49,7 @@ def test_install_hook_creates_entry():
     for event_type, command in HOOK_COMMANDS.items():
         assert event_type in settings["hooks"]
         event_hooks = settings["hooks"][event_type]
-        assert any(
-            h.get("command") == command
-            for entry in event_hooks
-            for h in entry.get("hooks", [])
-        )
+        assert any(h.get("command") == command for entry in event_hooks for h in entry.get("hooks", []))
 
 
 def test_install_hook_idempotent():
@@ -68,11 +64,7 @@ def test_install_hook_idempotent():
 
 
 def test_install_preserves_existing_hooks():
-    existing = {
-        "PostToolUse": [
-            {"matcher": "", "hooks": [{"type": "command", "command": "clauditor check"}]}
-        ]
-    }
+    existing = {"PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "clauditor check"}]}]}
     path = _make_settings(hooks=existing)
     with patch("anvl.hooks.SETTINGS_PATH", path):
         install_hook()

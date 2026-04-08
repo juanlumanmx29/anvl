@@ -141,26 +141,31 @@ def get_calibration_info() -> dict:
 
 def reset_calibration() -> None:
     """Reset all calibration data."""
-    _save_calibration({
-        "baselines": [],
-        "session_ids": [],
-        "calibrated_baseline": None,
-        "session_count": 0,
-    })
+    _save_calibration(
+        {
+            "baselines": [],
+            "session_ids": [],
+            "calibrated_baseline": None,
+            "session_count": 0,
+        }
+    )
 
 
 def export_calibration(path: Path) -> None:
     """Export calibration data to an external file."""
     import shutil
+
     if CALIBRATION_FILE.exists():
         shutil.copy2(CALIBRATION_FILE, path)
     else:
-        _save_calibration({
-            "baselines": [],
-            "session_ids": [],
-            "calibrated_baseline": None,
-            "session_count": 0,
-        })
+        _save_calibration(
+            {
+                "baselines": [],
+                "session_ids": [],
+                "calibrated_baseline": None,
+                "session_count": 0,
+            }
+        )
         shutil.copy2(CALIBRATION_FILE, path)
 
 

@@ -12,9 +12,7 @@ def test_slug_with_spaces():
 
 
 def test_slug_onedrive_path():
-    slug = path_to_slug(
-        r"c:\Users\jumontes\OneDrive - Grupo Security\Escritorio\Juan Luis\ANVL"
-    )
+    slug = path_to_slug(r"c:\Users\jumontes\OneDrive - Grupo Security\Escritorio\Juan Luis\ANVL")
     assert slug == "c--users-jumontes-onedrive---grupo-security-escritorio-juan-luis-anvl"
 
 
