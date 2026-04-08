@@ -1,8 +1,8 @@
 # ANVL
 
 [![CI](https://github.com/jumontes/anvl/actions/workflows/ci.yml/badge.svg)](https://github.com/jumontes/anvl/actions/workflows/ci.yml)
-[![PyPI version](https://img.shields.io/pypi/v/anvl.svg)](https://pypi.org/project/anvl/)
-[![Python 3.11+](https://img.shields.io/pypi/pyversions/anvl.svg)](https://pypi.org/project/anvl/)
+[![PyPI version](https://img.shields.io/pypi/v/anvl-monitor.svg)](https://pypi.org/project/anvl-monitor/)
+[![Python 3.11+](https://img.shields.io/pypi/pyversions/anvl-monitor.svg)](https://pypi.org/project/anvl-monitor/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Session monitor for Claude Code — saves your quota by detecting inflated sessions.**
@@ -22,7 +22,7 @@ On turn 1, this might be 150K tokens. By turn 20, it's 500K. By turn 50, you're 
 ## Quick start
 
 ```bash
-pip install anvl
+pip install anvl-monitor
 anvl init
 ```
 
@@ -147,7 +147,7 @@ This gives the new session full context without carrying the token debt.
 
 ```bash
 # From PyPI
-pip install anvl
+pip install anvl-monitor
 
 # From source
 git clone https://github.com/jumontes/anvl.git

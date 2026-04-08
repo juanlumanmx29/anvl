@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "anvl"
+name = "anvl-monitor"
 version = "0.1.0"
 description = "Session monitor and handoff tool for Claude Code"
 readme = "README.md"
