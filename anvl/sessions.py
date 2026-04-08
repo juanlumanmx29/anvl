@@ -2,13 +2,14 @@
 
 import json
 import os
+import statistics
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .calibration import get_calibrated_baseline, record_baseline
-from .config import CLAUDE_HOME, get_projects_dir, get_sessions_dir, load_config, path_to_slug
+from .config import CLAUDE_HOME, get_projects_dir, get_sessions_dir, load_config
 
 # Simple mtime-based cache for collect_all_sessions
 _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
@@ -41,41 +42,47 @@ class SessionSummary:
     turns: int = 0
     per_turn_tokens: list[int] = field(default_factory=list)
 
-    # Optional calibrated baseline from historical sessions
-    calibrated_baseline: int | None = None
+    # Calibrated baseline from historical sessions (always has a value)
+    calibrated_baseline: int = 0
 
     @property
     def session_baseline(self) -> int:
-        """Min tokens/turn from first 5 turns of this session."""
+        """Median tokens/turn from first 5 turns of this session."""
         window = 5
         if len(self.per_turn_tokens) < window:
             return 0
-        return min(self.per_turn_tokens[:window])
+        return int(statistics.median(self.per_turn_tokens[:window]))
 
     @property
     def effective_baseline(self) -> int:
-        """Baseline used for waste calculation (calibrated or per-session)."""
-        if self.calibrated_baseline and self.calibrated_baseline > 0:
-            return self.calibrated_baseline
-        return self.session_baseline
+        """Baseline used for waste calculation.
+
+        Prefers session's own baseline (first 5 turns) when available,
+        because it reflects the actual cost of THIS project. A large
+        project naturally costs more per turn than a small one.
+        Falls back to calibrated global baseline for young sessions.
+        """
+        return self.session_baseline or self.calibrated_baseline
 
     @property
     def waste_factor(self) -> float:
         """Peak waste: max avg_window / baseline across all windows.
 
-        Uses calibrated baseline if available (from historical sessions),
-        otherwise falls back to min(first 5 turns). Checks every possible
-        5-turn window and keeps the worst — health never improves.
+        Uses calibrated baseline if available (global, from all sessions),
+        otherwise falls back to min(first 5 turns). With a calibrated
+        baseline, health works from turn 1 — no warmup needed.
         """
-        window = 5
-        if len(self.per_turn_tokens) < window:
-            return 1.0
         baseline = self.effective_baseline
         if baseline <= 0:
             return 1.0
+        tokens = self.per_turn_tokens
+        if not tokens:
+            return 1.0
+        # Use smaller window when we have fewer turns (min 1, max 5)
+        window = min(5, len(tokens))
         peak = 1.0
-        for i in range(len(self.per_turn_tokens) - window + 1):
-            avg = sum(self.per_turn_tokens[i:i + window]) / window
+        for i in range(len(tokens) - window + 1):
+            avg = sum(tokens[i:i + window]) / window
             w = avg / baseline
             if w > peak:
                 peak = w
@@ -85,9 +92,19 @@ class SessionSummary:
     def health_pct(self) -> int:
         """Session health as percentage (0-100).
 
-        Linear from 1x (100%) to 10x (0%). Under 5 turns = 100%.
+        Linear from 1x (100%) to 10x (0%).
+        Young sessions get a health floor — waste needs more data to be
+        reliable, so we don't alarm the user prematurely:
+          < 2 turns: always 100%
+          < 10 turns: floor at 40% (yellow at worst, never red)
+          < 20 turns: floor at 15% (can go red but not 0%)
+          >= 20 turns: no floor
         """
-        if len(self.per_turn_tokens) < 5:
+        n = len(self.per_turn_tokens)
+        if n < 2:
+            return 100
+        # Without calibration, need 5 turns for session-only baseline
+        if self.calibrated_baseline == 0 and n < 5:
             return 100
         w = self.waste_factor
         if w <= 1.0:
@@ -95,7 +112,7 @@ class SessionSummary:
         threshold = 10.0
         if w >= threshold:
             return 0
-        return max(0, min(100, int(100 * (threshold - w) / (threshold - 1))))
+        return max(0, int(100 * (threshold - w) / (threshold - 1)))
 
     @property
     def efficiency(self) -> str:
@@ -250,6 +267,25 @@ def _is_process_running(pid: int) -> bool:
         return False
 
 
+# Max minutes since last JSONL write before considering session stale
+_STALE_MINUTES = 10
+
+
+def _is_session_stale(jsonl_path: Path) -> bool:
+    """Check if a session's JSONL hasn't been written to recently.
+
+    On Windows, processes can linger after a session closes. If the JSONL
+    file hasn't been modified in _STALE_MINUTES, the session is likely dead
+    even if the PID is still running.
+    """
+    try:
+        mtime = jsonl_path.stat().st_mtime
+        age_minutes = (time.time() - mtime) / 60
+        return age_minutes > _STALE_MINUTES
+    except OSError:
+        return True
+
+
 def _extract_project_name(cwd: str) -> str:
     """Extract short project name from full cwd path."""
     parts = Path(cwd).parts
@@ -324,19 +360,22 @@ def collect_all_sessions() -> list[SessionSummary]:
                     jsonl_file.stat().st_mtime, tz=timezone.utc
                 )
 
-            is_active = bool(pid) and _is_process_running(pid)
+            is_active = (
+                bool(pid)
+                and _is_process_running(pid)
+                and not _is_session_stale(jsonl_file)
+            )
             ai_title = _get_ai_title(jsonl_file)
             totals = _quick_token_sum(jsonl_file)
             project_name = _extract_project_name(cwd) if cwd else project_dir.name
 
-            # Auto-calibration: record baseline and get calibrated one
+            # Auto-calibration: record baseline and get global calibrated one
             per_turn = totals["per_turn_tokens"]
-            project_slug = path_to_slug(cwd) if cwd else project_dir.name
             if len(per_turn) >= 5:
-                session_bl = min(per_turn[:5])
+                session_bl = int(statistics.median(per_turn[:5]))
                 if session_bl > 0:
-                    record_baseline(project_slug, session_id, session_bl)
-            calibrated = get_calibrated_baseline(project_slug)
+                    record_baseline(session_id, session_bl)
+            calibrated = get_calibrated_baseline()
 
             summaries.append(SessionSummary(
                 session_id=session_id,
@@ -386,41 +425,59 @@ def compute_window_usage(summaries: list[SessionSummary], window_hours: int = 5)
 
 
 def compute_savings(summaries: list[SessionSummary]) -> dict:
-    """Estimate how much quota was saved by handoffs.
+    """Compute real token savings from session rotation.
 
-    Compares actual usage vs hypothetical single-session usage.
-    If a session had been one giant conversation, cache reads would be
-    much higher. Splitting into fresh sessions resets the context.
+    Measures savings by comparing: when you start a fresh session after an
+    inflated one, the first turns cost much less than continuing would have.
+
+    Savings per rotation = (prev session's last avg/turn - new session's
+    first avg/turn) × benefited turns.
+
+    Also computes total waste = actual input above baseline cost.
     """
-    # For sessions with >30 turns, estimate what the waste would have been
-    # without handoffs: each additional turn reads more and more cache
-    total_actual_weighted = 0.0
-    total_hypothetical_weighted = 0.0
+    from collections import defaultdict
+    from .calibration import get_calibrated_baseline
 
+    global_bl = get_calibrated_baseline() or 0
+
+    # Group by project, sorted by time
+    by_project: dict[str, list[SessionSummary]] = defaultdict(list)
     for s in summaries:
-        actual = s.weighted_cost
-        total_actual_weighted += actual
+        if s.turns >= 5 and s.per_turn_tokens:
+            by_project[s.project].append(s)
+    for proj in by_project:
+        by_project[proj].sort(key=lambda s: s.started_at)
 
-        if s.turns > 10:
-            # Without handoff: cache reads would grow linearly
-            # Estimate: baseline cost per turn (first turns) vs inflated cost
-            avg_per_turn = actual / max(s.turns, 1)
-            # In a fresh session, cost per turn is ~baseline
-            # In inflated session, later turns cost 3-10x more
-            # Rough estimate: rotating every 30 turns saves ~40% of cache reads
-            hypothetical = actual * (1 + (s.turns / 30) * 0.4)
-            total_hypothetical_weighted += hypothetical
-        else:
-            total_hypothetical_weighted += actual
+    total_wasted = 0
+    total_saved = 0
 
-    saved = total_hypothetical_weighted - total_actual_weighted
-    pct_saved = (saved / max(total_hypothetical_weighted, 1)) * 100
+    for proj, sess_list in by_project.items():
+        for i, s in enumerate(sess_list):
+            # Wasted = actual input above what baseline turns would cost
+            ideal = global_bl * s.turns if global_bl else 0
+            if ideal > 0:
+                total_wasted += max(0, s.total_input - ideal)
+
+            # Saved: compare fresh start cost vs continuing previous session
+            if i > 0:
+                prev = sess_list[i - 1]
+                if not prev.per_turn_tokens:
+                    continue
+                # Previous session's last 5-turn avg (what continuing would cost)
+                tail = prev.per_turn_tokens[-5:]
+                prev_avg = sum(tail) / len(tail)
+                # This session's first 5-turn avg (fresh start cost)
+                head = s.per_turn_tokens[:5]
+                fresh_avg = sum(head) / len(head)
+                # Savings per turn from starting fresh
+                saving_per_turn = max(0, prev_avg - fresh_avg)
+                # First ~10 turns benefit from fresh context
+                benefited = min(s.turns, 10)
+                total_saved += int(saving_per_turn * benefited)
 
     return {
-        "actual_weighted": total_actual_weighted,
-        "hypothetical_weighted": total_hypothetical_weighted,
-        "saved_weighted": max(0, saved),
-        "pct_saved": max(0, pct_saved),
+        "total_wasted": int(total_wasted),
+        "saved_tokens": int(total_saved),
     }
 
 

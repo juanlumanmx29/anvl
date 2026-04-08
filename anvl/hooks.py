@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .calibration import get_calibrated_baseline, record_baseline
-from .config import CLAUDE_HOME, load_config, path_to_slug
+from .config import CLAUDE_HOME, load_config
 
 SETTINGS_PATH = CLAUDE_HOME / "settings.json"
 
@@ -122,71 +122,125 @@ def session_start_entrypoint() -> None:
         )
 
 
-def hook_entrypoint() -> None:
+def hook_entrypoint(can_block: bool = True) -> None:
     """Called by Claude Code on UserPromptSubmit / PostToolUse.
 
-    Uses Clauditor-style waste: current_tokens_per_turn / baseline_tokens_per_turn.
-    Alerts when the session is inflating. Blocks at critical levels.
+    Uses the SAME SessionSummary logic as the monitor so waste/health
+    numbers are always consistent between what the monitor displays
+    and when alerts fire.
+
+    PostToolUse must NEVER block (can_block=False) — it fires on every
+    tool call and blocking would spam the user and prevent any work.
+    Only UserPromptSubmit can block (once per user message).
     """
+    # Read hook input from stdin (contains prompt, cwd, session_id, etc.)
+    hook_input = {}
+    try:
+        raw = sys.stdin.read()
+        if raw.strip():
+            hook_input = json.loads(raw)
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    # Bypass: if user message contains "anvl bypass", skip all checks
+    prompt = hook_input.get("prompt", "")
+    if "anvl bypass" in prompt.lower():
+        print(
+            "[ANVL] Bypass activated — session checks skipped for this message.",
+            file=sys.stdout,
+        )
+        return
+
     config = load_config()
     block_threshold = config.get("handoff_waste_threshold", 10)
     min_turns = config.get("min_turns_for_alert", 5)
 
-    cwd = Path.cwd()
+    cwd = Path(hook_input.get("cwd", "")) if hook_input.get("cwd") else Path.cwd()
     from .parser import find_active_session
+    from .sessions import _quick_token_sum, SessionSummary
 
     result = find_active_session(cwd)
     if result is None:
         return
 
     jsonl_path, session_id = result
-    turns_data = _collect_turn_tokens(jsonl_path)
-    if not turns_data or len(turns_data) < min_turns:
+
+    # Use the same token parser as the monitor
+    totals = _quick_token_sum(jsonl_path)
+    per_turn = totals["per_turn_tokens"]
+    turns = totals["turns"]
+
+    if not per_turn or turns < min_turns:
         return
 
-    # Compute peak waste: max window avg / baseline (never decreases)
+    # Auto-calibration: record baseline, get global calibrated
     window = 5
-    session_baseline = min(turns_data[:window])
+    if len(per_turn) >= window:
+        import statistics as _stats
+        session_bl = int(_stats.median(per_turn[:window]))
+        if session_bl > 0:
+            record_baseline(session_id, session_bl)
+    calibrated = get_calibrated_baseline()
 
-    if session_baseline == 0:
+    # Build a SessionSummary to reuse the exact same waste/health logic
+    from datetime import datetime, timezone
+    summary = SessionSummary(
+        session_id=session_id,
+        project="",
+        cwd=str(cwd),
+        ai_title="",
+        pid=0,
+        started_at=datetime.now(timezone.utc),
+        is_active=True,
+        turns=turns,
+        per_turn_tokens=per_turn,
+        calibrated_baseline=calibrated,
+    )
+
+    waste = summary.waste_factor
+    health_pct = summary.health_pct
+
+    if health_pct >= 60:
         return
 
-    # Auto-calibration: record this session's baseline, use calibrated if available
-    project_slug = path_to_slug(cwd)
-    record_baseline(project_slug, session_id, session_baseline)
-    calibrated = get_calibrated_baseline(project_slug)
-    baseline_min = calibrated if calibrated else session_baseline
+    # Format cost explanation for all alert levels
+    from .analyzer import format_tokens
+    baseline = summary.effective_baseline
+    if per_turn:
+        window = min(5, len(per_turn))
+        current_avg = sum(per_turn[-window:]) // window
+    else:
+        current_avg = 0
 
-    peak_waste = 1.0
-    for i in range(len(turns_data) - window + 1):
-        avg = sum(turns_data[i:i + window]) / window
-        w = avg / baseline_min
-        if w > peak_waste:
-            peak_waste = w
-    waste = peak_waste
-    turns = len(turns_data)
-    health_pct = min(100, max(0, int(100 * (block_threshold - waste) / (block_threshold - 1)))) if waste > 1 else 100
-
-    if waste < 2:
-        return
-
-    if waste >= block_threshold and turns >= 20:
-        # Critical: auto-handoff + block session
-        _auto_handoff(jsonl_path, turns)
+    if health_pct < 10 and can_block:
+        # Critical: block session + auto-handoff (only on UserPromptSubmit)
+        _auto_handoff(jsonl_path, turns, waste, current_avg, baseline)
         sys.exit(2)
     elif health_pct < 30:
         # Red zone: strong warning, generate handoff
         _generate_handoff_quiet(jsonl_path)
         print(
-            f"\n[ANVL] This session is inflated ({waste:.0f}x). Your work has been saved to handoff.md\n"
-            '       Start a new conversation and say: "Read handoff.md and continue where I left off"\n',
+            f"\n{'=' * 60}\n"
+            f"[ANVL] SESSION INFLATED — Health: {health_pct}%\n"
+            f"\n"
+            f"Each message now costs {waste:.0f}x more than a fresh session.\n"
+            f"  Baseline cost:  ~{format_tokens(baseline)}/turn (fresh session)\n"
+            f"  Current cost:   ~{format_tokens(current_avg)}/turn ({turns} turns in)\n"
+            f"\n"
+            f"Your work has been saved to handoff.md\n"
+            f'Start a new conversation and say: "Read handoff.md and continue where I left off"\n'
+            f"\n"
+            f'To force continue anyway, prefix your message with "anvl bypass"\n'
+            f"{'=' * 60}\n",
             file=sys.stdout,
         )
-    elif health_pct < 60:
+    else:
         # Yellow zone: informational
         print(
-            f"\n[ANVL] Session health: {health_pct}% ({waste:.1f}x waste). "
-            "Consider starting a new conversation soon.\n",
+            f"\n[ANVL] Session health: {health_pct}% — each message costs ~{waste:.1f}x a fresh session.\n"
+            f"       Baseline: ~{format_tokens(baseline)}/turn → Current: ~{format_tokens(current_avg)}/turn ({turns} turns)\n"
+            f"       Consider starting a new conversation soon.\n"
+            f'       (Tip: "anvl bypass" to skip this check)\n',
             file=sys.stdout,
         )
 
@@ -207,94 +261,47 @@ def _generate_handoff_quiet(jsonl_path: Path) -> Path | None:
         return None
 
 
-def _auto_handoff(jsonl_path: Path, turns: int) -> None:
-    """Auto-generate handoff and print blocking message."""
+def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0,
+                   current_avg: int = 0, baseline: int = 0) -> None:
+    """Auto-generate handoff and print blocking message.
+
+    stderr = shown to user as the block reason (Claude Code displays this)
+    stdout = injected as context into the conversation
+    """
+    from .analyzer import format_tokens
     output_path = _generate_handoff_quiet(jsonl_path)
 
+    # stderr: the user sees this as the block message
+    cost_info = ""
+    if waste > 0 and current_avg > 0:
+        cost_info = (
+            f"\n"
+            f"Each message now costs {waste:.0f}x more than a fresh session.\n"
+            f"  Baseline: ~{format_tokens(baseline)}/turn → Current: ~{format_tokens(current_avg)}/turn\n"
+        )
+
+    block_msg = (
+        "\n" + "=" * 60 + "\n"
+        "[ANVL] SESSION BLOCKED — Too inflated to continue efficiently\n"
+        f"{cost_info}"
+        "\n"
+        "Your work has been saved to handoff.md\n"
+        "\n"
+        "Options:\n"
+        '  1. Start a new conversation: "Read handoff.md and continue"\n'
+        '  2. Force continue: prefix your message with "anvl bypass"\n'
+        "\n"
+        "=" * 60
+    )
+    print(block_msg, file=sys.stderr)
+
+    # stdout: context for Claude (if bypass is used later)
     if output_path:
         print(
-            "\n" + "=" * 60 + "\n"
-            "[ANVL] Session blocked -- too inflated to continue efficiently.\n"
-            "\n"
-            f"Handoff saved: {output_path}\n"
-            "\n"
-            "Start a new conversation and say:\n"
-            '  "Read handoff.md and continue where I left off"\n'
-            "\n"
-            "=" * 60 + "\n",
-            file=sys.stdout,
-        )
-    else:
-        print(
-            "\n[ANVL] Session blocked -- too inflated to continue efficiently.\n"
-            "       Start a new conversation to save quota.\n",
+            f"[ANVL] Session blocked ({waste:.0f}x waste, {turns} turns). "
+            f"Handoff saved: {output_path}. "
+            'User can bypass with "anvl bypass" prefix.',
             file=sys.stdout,
         )
 
 
-def _collect_turn_tokens(jsonl_path: Path) -> list[int]:
-    """Collect total tokens per user turn from JSONL (fast scan).
-
-    Returns a list where each entry is the total tokens for that turn.
-    Deduplicates by requestId to avoid double-counting streaming chunks.
-    Groups assistant usage records by the preceding user turn.
-    """
-    turn_totals: list[int] = []
-    current_turn_tokens = 0
-    request_usage: dict[str, int] = {}
-    in_turn = False
-
-    try:
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-
-                # Detect user turns (not tool results)
-                if '"type":"user"' in line or '"type": "user"' in line:
-                    if '"tool_use_id"' not in line:
-                        # Save previous turn
-                        if in_turn:
-                            total = current_turn_tokens + sum(request_usage.values())
-                            if total > 0:
-                                turn_totals.append(total)
-                        current_turn_tokens = 0
-                        request_usage = {}
-                        in_turn = True
-                    continue
-
-                if not ('"type":"assistant"' in line or '"type": "assistant"' in line):
-                    continue
-
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                usage = record.get("message", {}).get("usage")
-                if not usage:
-                    continue
-
-                inp = usage.get("input_tokens", 0)
-                cr = usage.get("cache_read_input_tokens", 0)
-                cc = usage.get("cache_creation_input_tokens", 0)
-                out = usage.get("output_tokens", 0)
-                total = inp + cr + cc + out
-
-                request_id = record.get("requestId", "")
-                if request_id:
-                    request_usage[request_id] = total
-                else:
-                    current_turn_tokens += total
-
-    except OSError:
-        return []
-
-    # Don't forget the last turn
-    if in_turn:
-        total = current_turn_tokens + sum(request_usage.values())
-        if total > 0:
-            turn_totals.append(total)
-
-    return turn_totals

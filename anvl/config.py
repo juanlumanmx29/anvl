@@ -49,8 +49,9 @@ def get_sessions_dir() -> Path:
 def path_to_slug(path: str | Path) -> str:
     """Convert a filesystem path to Claude Code's project slug format.
 
-    Rule: replace ':', '\\', '/', and ' ' with '-'.
-    Example: c:\\Users\\foo\\bar -> c--Users-foo-bar
+    Rule: replace ':', '\\', '/', ' ', and '.' with '-', then lowercase.
+    Lowercasing ensures Windows case-insensitive paths produce the same slug.
+    Example: C:\\Users\\foo\\bar -> c--users-foo-bar
     """
     s = str(path)
     # Normalize to forward slashes first, then apply replacements
@@ -58,6 +59,9 @@ def path_to_slug(path: str | Path) -> str:
     s = s.replace(":", "-")
     s = s.replace("/", "-")
     s = s.replace(" ", "-")
+    s = s.replace(".", "-")
+    # Lowercase for case-insensitive matching (Windows paths vary in case)
+    s = s.lower()
     # Remove trailing dash if path ended with separator
     return s.rstrip("-")
 

@@ -16,19 +16,27 @@ if sys.platform == "win32":
         except Exception:
             pass
 
+from rich.align import Align
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
 from .analyzer import format_tokens
-from .calibration import get_calibrated_baseline
-from .config import load_config, path_to_slug
+from .calibration import get_calibrated_baseline, get_calibration_info, DEFAULT_BASELINE
+from .config import load_config
 from .sessions import collect_all_sessions, compute_savings
 
+ANVL_BANNER = """\
+[white] █████╗ ███╗   ██╗██╗   ██╗██╗[/white]
+[white]██╔══██╗████╗  ██║██║   ██║██║[/white]
+[white]███████║██╔██╗ ██║██║   ██║██║[/white]
+[white]██╔══██║██║╚██╗██║╚██╗ ██╔╝██║[/white]
+[white]██║  ██║██║ ╚████║ ╚████╔╝ ███████╗[/white]
+[white]╚═╝  ╚═╝╚═╝  ╚═══╝  ╚═══╝  ╚══════╝[/white]"""
 
-def _health_bar(pct: int, color: str, bar_len: int = 15) -> str:
+
+def _health_bar(pct: int, color: str, bar_len: int = 20) -> str:
     """Render a colored health bar."""
     filled = int(pct / 100 * bar_len)
     return f"[{color}]{'█' * filled}{'░' * (bar_len - filled)}[/{color}]"
@@ -47,126 +55,124 @@ def _elapsed(started_at: datetime) -> str:
     return f"{hours}h {mins}m"
 
 
+def _current_avg(s) -> int:
+    """Get current avg tokens/turn for a session (last 5 turns)."""
+    if not s.per_turn_tokens:
+        return 0
+    window = min(5, len(s.per_turn_tokens))
+    return sum(s.per_turn_tokens[-window:]) // window
+
+
 def build_monitor_display() -> Group:
-    """Build the unified monitor display — one table with all session info."""
+    """Build the redesigned monitor display — clean, scannable, one line per session."""
     summaries = collect_all_sessions()
     active = [s for s in summaries if s.is_active]
 
-    # Header stats
-    total_input = sum(s.total_input for s in active)
-    total_output = sum(s.total_output for s in active)
-    mature = [s for s in active if s.turns >= 5]
-    worst_waste = max((s.waste_factor for s in mature), default=0)
-    worst_health = min((s.health_pct for s in mature), default=100)
-    worst_color = "green" if worst_health >= 60 else ("yellow" if worst_health >= 30 else "red")
+    # Calibration info
+    cal_info = get_calibration_info()
+    cal_bl = cal_info.get("calibrated_baseline")
+    cal_count = cal_info.get("session_count", 0)
+    if cal_bl:
+        cal_str = f"[cyan]{format_tokens(cal_bl)}[/cyan]/turn [dim]({cal_count} sessions)[/dim]"
+    else:
+        cal_str = f"[dim]{format_tokens(DEFAULT_BASELINE)}/turn (default)[/dim]"
 
-    worst_str = f"[{worst_color}][bold]{worst_waste:.1f}x[/bold][/{worst_color}]" if mature else "[dim]--[/dim]"
-    header = (
-        f"  Active: [bold]{len(active)}[/bold]  │  "
-        f"Total Input: [bold]{format_tokens(total_input)}[/bold]  │  "
-        f"Total Output: [bold]{format_tokens(total_output)}[/bold]  │  "
-        f"Worst: {worst_str}"
-    )
+    header = f"  Baseline: {cal_str}  │  Active: [bold]{len(active)}[/bold]"
 
-    # Sessions table
-    table = Table(
-        show_header=True,
-        header_style="bold",
-        expand=True,
-        border_style="dim",
-        pad_edge=True,
-        padding=(0, 1),
-    )
-    table.add_column("", width=1)
-    table.add_column("Project", max_width=14, no_wrap=True)
-    table.add_column("Title", max_width=22, no_wrap=True)
-    table.add_column("Turns", justify="right", width=5)
-    table.add_column("Input", justify="right", width=7)
-    table.add_column("Output", justify="right", width=7)
-    table.add_column("Baseline", justify="right", width=8)
-    table.add_column("Current", justify="right", width=8)
-    table.add_column("Waste", justify="right", width=5)
-    table.add_column("Health", width=22, no_wrap=True)
-    table.add_column("Time", justify="right", width=5)
+    # Build session lines — one per session, health bar prominent
+    session_lines: list[str] = []
 
     if not active:
-        table.add_row(
-            "", "[dim]No active sessions[/dim]",
-            "", "", "", "", "", "", "", "", "",
-        )
+        session_lines.append("  [dim]No active sessions[/dim]")
     else:
+        # Find max title length for alignment
+        titles = []
         for s in active:
+            proj = s.project or "?"
+            ai = s.ai_title or "Untitled"
+            title = f"{proj} > {ai}"[:40]
+            titles.append(title)
+
+        for i, s in enumerate(active):
             color = s.efficiency
             pct = s.health_pct
-            too_new = s.turns < 5
+            title = titles[i]
+            elapsed = _elapsed(s.started_at)
+            waste = s.waste_factor
             dot = f"[{color}]●[/{color}]"
 
-            if too_new:
-                health_str = "[dim]  waiting…  --[/dim]"
-                waste_str = "[dim] --[/dim]"
+            if s.turns == 0:
+                session_lines.append(
+                    f"  {dot} {title:<40s}  [dim]waiting...[/dim]"
+                )
+            elif s.turns < 5:
+                turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
+                session_lines.append(
+                    f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  [dim]warming up...[/dim]"
+                )
             else:
-                bar = _health_bar(pct, color, bar_len=10)
-                health_str = f"{bar} [{color}]{pct:>3}%[/{color}]"
-                waste_str = f"[{color}]{s.waste_factor:.1f}x[/{color}]"
+                bar = _health_bar(pct, color, bar_len=20)
+                turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
+                waste_str = f"[{color}]{waste:.1f}x[/{color}]"
 
-            # Baseline info
-            bl = s.effective_baseline
-            calibrated = s.calibrated_baseline
-            if calibrated and calibrated > 0:
-                bl_str = f"[cyan]{format_tokens(bl)}[/cyan]"  # cyan = calibrated
-            elif bl > 0:
-                bl_str = f"{format_tokens(bl)}"
-            else:
-                bl_str = "[dim]-[/dim]"
+                session_lines.append(
+                    f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  "
+                    f"[{color}]{pct:>3}%[/{color}] {bar} {waste_str}"
+                )
 
-            # Current avg (last 5 turns)
-            window = 5
-            if len(s.per_turn_tokens) >= window:
-                current_avg = sum(s.per_turn_tokens[-window:]) // window
-                cur_str = format_tokens(current_avg)
-            elif s.per_turn_tokens:
-                current_avg = sum(s.per_turn_tokens) // len(s.per_turn_tokens)
-                cur_str = format_tokens(current_avg)
-            else:
-                cur_str = "[dim]-[/dim]"
+                # Inline detail for unhealthy sessions (only with enough data)
+                if pct < 60 and s.turns >= 5:
+                    bl = s.effective_baseline
+                    cur = _current_avg(s)
+                    cost_str = f"~{format_tokens(bl)} → ~{format_tokens(cur)}/turn"
+                    if pct < 10:
+                        session_lines.append(
+                            f"    [red]⚠ BLOCKED — {waste:.0f}x cost ({cost_str})[/red]"
+                        )
+                    elif pct < 30:
+                        session_lines.append(
+                            f"    [red]⚠ INFLATED — {waste:.0f}x cost ({cost_str})[/red]"
+                        )
+                    else:
+                        session_lines.append(
+                            f"    [yellow]● warming — {waste:.1f}x cost ({cost_str})[/yellow]"
+                        )
 
-            elapsed = _elapsed(s.started_at)
+    # Compose panel content
+    content_parts = [
+        Align.center(Text.from_markup(ANVL_BANNER)),
+        Text(""),
+        Text.from_markup(header),
+        Text(""),
+    ]
+    for line in session_lines:
+        content_parts.append(Text.from_markup(line))
 
-            table.add_row(
-                dot,
-                s.project[:14],
-                (s.ai_title or "Untitled")[:22],
-                str(s.turns),
-                format_tokens(s.total_input),
-                format_tokens(s.total_output),
-                bl_str,
-                cur_str,
-                waste_str,
-                health_str,
-                f"[dim]{elapsed}[/dim]",
-            )
+    panel = Panel(
+        Group(*content_parts),
+        subtitle="[dim]Ctrl+C to exit  │  Refreshes every 2s[/dim]",
+        border_style="white",
+    )
+
+    parts: list = [panel]
 
     # Savings footer
     savings = compute_savings(summaries)
-    saved_pct = savings["pct_saved"]
+    wasted = savings["total_wasted"]
+    saved = savings["saved_tokens"]
+    if wasted > 0 or saved > 0:
+        footer_parts = []
+        if saved > 0:
+            footer_parts.append(f"[green]{format_tokens(saved)}[/green] saved by rotation")
+        if wasted > 0:
+            footer_parts.append(f"[red]{format_tokens(wasted)}[/red] wasted by inflation")
+        parts.append(Text.from_markup(f"  {' │ '.join(footer_parts)}"))
 
-    parts: list = []
-
-    # Wrap header + table in a panel
-    panel_content = Group(Text.from_markup(header), Text(""), table)
-    border_color = worst_color if active else "dim"
-    panel = Panel(
-        panel_content,
-        title="ANVL Monitor — IronDevz",
-        subtitle="[dim]Ctrl+C to exit  │  Refreshes every 2s  │  [cyan]Cyan[/cyan] baseline = calibrated[/dim]",
-        border_style=border_color,
-    )
-    parts.append(panel)
-
-    if saved_pct > 0:
-        parts.append(Text.from_markup(
-            f"  [dim]Estimated savings from session rotation: [green]{saved_pct:.0f}%[/green] quota saved[/dim]"
-        ))
+    parts.append(Text.from_markup(
+        "  [dim]% = session health (100% fresh, 0% depleted) │ "
+        "Nx = cost multiplier vs fresh session[/dim]"
+    ))
+    parts.append(Text.from_markup("  [dim]IronDevz[/dim]"))
 
     return Group(*parts)
 

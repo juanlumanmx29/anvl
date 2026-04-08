@@ -265,13 +265,13 @@ def cmd_init(args: argparse.Namespace) -> None:
     console.print("")
     console.print(Panel(
         "[bold]Quick start:[/bold]\n\n"
+        "  [cyan]anvl calibrate[/cyan]   - Scan existing sessions and build your baseline\n"
         "  [cyan]anvl status[/cyan]      - Check current session health\n"
         "  [cyan]anvl sessions[/cyan]    - See all sessions with usage stats\n"
         "  [cyan]anvl monitor[/cyan]     - Live terminal monitor (works from anywhere)\n"
-        "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n"
-        "  [cyan]anvl calibrate[/cyan]   - View auto-calibration baselines\n\n"
+        "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
         "ANVL will now alert you when a session gets inflated.\n"
-        "Auto-calibration activates after 3 sessions per project.",
+        "Run [cyan]anvl calibrate[/cyan] to build your baseline from existing sessions.",
         title="Setup complete",
         border_style="green",
     ))
@@ -376,97 +376,71 @@ def cmd_sessions(args: argparse.Namespace) -> None:
 
 
 def cmd_calibrate(args: argparse.Namespace) -> None:
-    """View or reset auto-calibration data."""
-    from .calibration import get_all_calibration, get_calibration_info, reset_calibration
-    from .config import path_to_slug
+    """Scan sessions, view, export, import, or reset calibration data."""
+    from .calibration import (
+        DEFAULT_BASELINE, export_calibration, get_calibrated_baseline,
+        get_calibration_info, import_calibration, reset_calibration,
+    )
 
     if args.reset:
-        if args.project:
-            slug = path_to_slug(args.project)
-            reset_calibration(slug)
-            console.print(f"[green]Calibration reset for project:[/green] {slug}")
-        else:
-            reset_calibration()
-            console.print("[green]All calibration data reset.[/green]")
+        reset_calibration()
+        console.print("[green]Calibration data reset.[/green]")
+        console.print(f"[dim]Default baseline ({format_tokens(DEFAULT_BASELINE)}/turn) will be used until recalibrated.[/dim]")
         return
 
-    if args.project:
-        slug = path_to_slug(args.project)
-        info = get_calibration_info(slug)
-        if info is None:
-            console.print(f"[yellow]No calibration data for:[/yellow] {slug}")
+    if getattr(args, "import_file", None):
+        path = Path(args.import_file)
+        if not path.exists():
+            console.print(f"[red]File not found:[/red] {path}")
             return
-        _print_calibration_project(slug, info)
-    else:
-        all_data = get_all_calibration()
-        if not all_data:
-            console.print("[yellow]No calibration data yet.[/yellow]")
-            console.print("[dim]Calibration builds automatically as you use sessions (needs 3+ sessions per project).[/dim]")
-            return
+        added = import_calibration(path)
+        info = get_calibration_info()
+        console.print(f"[green]Imported {added} new baselines.[/green] Total: {info['session_count']} sessions.")
+        bl = get_calibrated_baseline()
+        console.print(f"Global baseline: [cyan]{format_tokens(bl)}[/cyan]/turn")
+        return
 
-        table = Table(title="Auto-Calibration", show_header=True, header_style="bold", expand=True)
-        table.add_column("Project", max_width=30)
-        table.add_column("Sessions", justify="right", width=8)
-        table.add_column("Calibrated Baseline", justify="right", width=18)
-        table.add_column("Status", width=14)
-        table.add_column("Baselines (range)", width=20)
+    if args.export:
+        path = Path(args.export)
+        export_calibration(path)
+        info = get_calibration_info()
+        console.print(f"[green]Calibration exported to:[/green] {path}")
+        console.print(f"[dim]{info['session_count']} sessions, baseline: {format_tokens(get_calibrated_baseline())}/turn[/dim]")
+        return
 
-        for slug, proj in all_data.items():
-            baselines = proj.get("baselines", [])
-            calibrated = proj.get("calibrated_baseline")
-            count = proj.get("session_count", 0)
-            min_needed = 3
+    # Active scan: collect all sessions to record any missing baselines
+    from .sessions import collect_all_sessions, _session_cache
+    _session_cache["ts"] = 0  # invalidate cache to force fresh scan
+    console.print("[dim]Scanning sessions...[/dim]")
+    sessions = collect_all_sessions()
+    total_sessions = len([s for s in sessions if s.turns >= 5])
 
-            if calibrated:
-                status = "[green]Active[/green]"
-                cal_str = f"[bold]{format_tokens(calibrated)}[/bold]/turn"
-            else:
-                status = f"[yellow]{count}/{min_needed}[/yellow]"
-                cal_str = "[dim]Collecting...[/dim]"
-
-            if baselines:
-                range_str = f"{format_tokens(min(baselines))} — {format_tokens(max(baselines))}"
-            else:
-                range_str = "-"
-
-            # Shorten slug for display
-            display_name = slug.split("-")[-1] if "-" in slug else slug
-            if len(display_name) > 30:
-                display_name = display_name[:27] + "..."
-
-            table.add_row(display_name, str(count), cal_str, status, range_str)
-
-        console.print(table)
-        console.print("\n[dim]Calibration stabilizes waste measurements by using the median baseline across sessions.[/dim]")
-        console.print("[dim]Use [cyan]anvl calibrate --reset[/cyan] to clear all data.[/dim]")
-
-
-def _print_calibration_project(slug: str, info: dict) -> None:
-    """Print detailed calibration info for one project."""
+    # Display results
+    info = get_calibration_info()
     calibrated = info.get("calibrated_baseline")
     baselines = info.get("baselines", [])
     count = info.get("session_count", 0)
 
     lines = [
-        f"Project: [bold]{slug}[/bold]",
-        f"Sessions recorded: [bold]{count}[/bold]",
+        f"Sessions scanned: [bold]{total_sessions}[/bold] (with 5+ turns)",
+        f"Baselines recorded: [bold]{count}[/bold]",
     ]
 
     if calibrated:
-        lines.append(f"Calibrated baseline: [bold green]{format_tokens(calibrated)}[/bold green]/turn")
+        import statistics
+        lines.append(f"Global baseline: [bold cyan]{format_tokens(calibrated)}[/bold cyan]/turn (median)")
         lines.append(f"Range: {format_tokens(min(baselines))} — {format_tokens(max(baselines))}")
+        if len(baselines) >= 4:
+            q1, q3 = statistics.quantiles(baselines, n=4)[0], statistics.quantiles(baselines, n=4)[2]
+            lines.append(f"IQR: {format_tokens(int(q1))} — {format_tokens(int(q3))}")
         lines.append(f"Last updated: [dim]{info.get('last_updated', 'unknown')}[/dim]")
     else:
         remaining = info.get("min_needed", 3) - count
         lines.append(f"[yellow]Need {remaining} more session(s) to calibrate[/yellow]")
+        lines.append(f"Default baseline: [dim]{format_tokens(DEFAULT_BASELINE)}/turn[/dim]")
 
-    if baselines:
-        lines.append("")
-        lines.append("Per-session baselines:")
-        for i, bl in enumerate(baselines):
-            lines.append(f"  {i + 1}. {format_tokens(bl)}/turn")
-
-    console.print(Panel("\n".join(lines), title="Calibration Detail", border_style="blue"))
+    console.print(Panel("\n".join(lines), title="Global Calibration", border_style="cyan"))
+    console.print("[dim]Export: [cyan]anvl calibrate --export file.json[/cyan]  │  Import: [cyan]anvl calibrate --import file.json[/cyan]  │  Reset: [cyan]anvl calibrate --reset[/cyan][/dim]")
 
 
 def cmd_hook(args: argparse.Namespace) -> None:
@@ -474,9 +448,13 @@ def cmd_hook(args: argparse.Namespace) -> None:
     if args.event == "session-start":
         from .hooks import session_start_entrypoint
         session_start_entrypoint()
-    else:
+    elif args.event == "user-prompt-submit":
         from .hooks import hook_entrypoint
-        hook_entrypoint()
+        hook_entrypoint(can_block=True)
+    else:
+        # PostToolUse: warn only, never block
+        from .hooks import hook_entrypoint
+        hook_entrypoint(can_block=False)
 
 
 def main() -> None:
@@ -515,9 +493,10 @@ def main() -> None:
     subparsers.add_parser("uninstall", help="Remove ANVL hook from Claude Code")
 
     # calibrate
-    sp = subparsers.add_parser("calibrate", help="View/reset auto-calibration data")
+    sp = subparsers.add_parser("calibrate", help="Scan sessions and manage calibration")
     sp.add_argument("--reset", action="store_true", help="Reset calibration data")
-    sp.add_argument("--project", help="Project path or slug (default: all)")
+    sp.add_argument("--export", metavar="FILE", help="Export calibration to file")
+    sp.add_argument("--import", dest="import_file", metavar="FILE", help="Import calibration from file")
 
     # hook (hidden - called by Claude Code)
     sp = subparsers.add_parser("hook")

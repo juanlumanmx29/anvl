@@ -44,34 +44,34 @@ ANVL measures session health as a **percentage from 0% to 100%**, based on a sin
 ### Waste factor
 
 ```
-waste = current_tokens_per_turn / baseline_tokens_per_turn
+waste = peak_avg_tokens_per_turn / calibrated_baseline
 ```
 
-- **Baseline** = the minimum tokens/turn from the first 5 turns. This represents the cost of a "fresh" turn in your environment — just the system prompt, CLAUDE.md, and minimal context. Using the minimum (not average) prevents heavy early turns (like reading a handoff.md) from masking real inflation.
+- **Calibrated baseline** = the global median of "typical turn cost" across all your sessions. Each session contributes its median tokens/turn from the first 5 turns. With 50+ sessions of data, this is a stable reference for what a normal Claude Code turn costs in your workflow.
 
-- **Current** = the average tokens/turn over the last 5 turns.
+- **Peak avg** = the worst 5-turn window average across the entire session. Health never improves — once a session inflates, it stays marked as inflated.
 
 A fresh session has waste = 1.0x. As the conversation grows and Claude resends more history, tokens/turn increases, waste goes up.
 
 ### Health percentage
 
-Health maps waste linearly from 100% (fresh) to 0% (critical):
+Health maps waste linearly from 100% (fresh) to 0% (critical), weighted by **confidence**:
 
 ```
-health = 100% × (threshold - waste) / (threshold - 1)
+raw_health = 100% × (10 - waste) / 9
+confidence = min(1.0, turns / 20)
+health = raw_health × confidence + 100% × (1 - confidence)
 ```
 
-Where `threshold` defaults to 10x. So:
+Young sessions are blended toward 100% because waste isn't reliable with few data points. As turns increase, confidence grows and health reflects real waste:
 
-| Waste | Health | Meaning |
-|:-----:|:------:|:--------|
-| 1.0x | 100% | Fresh session, minimal context |
-| 2.0x | 89% | Normal growth, still efficient |
-| 5.0x | 56% | Getting expensive, consider rotating |
-| 8.0x | 22% | Heavily inflated, handoff generated |
-| 10.0x | 0% | Session blocked |
-
-Sessions with fewer than 5 turns always show 100% — there isn't enough data to measure inflation yet.
+| Waste | 5 turns | 10 turns | 20+ turns |
+|:-----:|:-------:|:--------:|:---------:|
+| 1.0x | 100% | 100% | 100% |
+| 2.0x | 97% | 94% | 88% |
+| 5.0x | 88% | 77% | 55% |
+| 8.0x | 80% | 61% | 22% |
+| 10.0x | 75% | 50% | 0% |
 
 ### Why tokens/turn matters
 
@@ -179,6 +179,8 @@ The hooks are **global** — once installed, ANVL monitors all sessions in all p
 | `anvl sessions` | All sessions with health status |
 | `anvl sessions --active` | Only active sessions |
 | `anvl monitor` | Live terminal monitor (auto-refreshes) |
+| `anvl calibrate` | View global calibration baseline |
+| `anvl calibrate --reset` | Reset calibration data |
 | `anvl handoff` | Generate handoff manually |
 | `anvl report` | Multi-session report |
 
@@ -190,11 +192,21 @@ anvl monitor
 
 Shows a live dashboard with:
 - Health bar with percentage and waste factor
-- Baseline vs current tokens/turn
+- Global calibrated baseline (median turn cost across all sessions)
 - Table of all active sessions with input/output totals
-- Estimated savings from session rotation
+- Tokens wasted by inflation and tokens saved by rotation
 
 Auto-refreshes every 2 seconds. Press `Ctrl+C` to exit.
+
+### Calibration
+
+ANVL learns what a "normal" turn costs by collecting baselines from all your sessions globally. Each session that reaches 5+ turns contributes its median tokens/turn to the global baseline.
+
+```bash
+anvl calibrate
+```
+
+Shows the current global baseline, session count, and range. With 3+ sessions, calibration activates and health works from turn 1 — no warmup period needed.
 
 ---
 
@@ -221,6 +233,8 @@ File: `~/.anvl/config.json`
 | 0% | ≥10x | **Session blocked** (exit code 2), handoff saved |
 
 Blocking requires at least 20 turns — ANVL won't block a short session even if waste is high, because short sessions are cheap regardless.
+
+**Bypass:** If ANVL blocks your session and you need to send one more message, type `anvl bypass` before your message. ANVL will skip all checks for that message.
 
 ---
 
