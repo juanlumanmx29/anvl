@@ -1,13 +1,23 @@
 # ANVL
 
-[![CI](https://github.com/jumontes/anvl/actions/workflows/ci.yml/badge.svg)](https://github.com/jumontes/anvl/actions/workflows/ci.yml)
+[![CI](https://github.com/juanlumanmx29/anvl/actions/workflows/ci.yml/badge.svg)](https://github.com/juanlumanmx29/anvl/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/anvl-monitor.svg)](https://pypi.org/project/anvl-monitor/)
 [![Python 3.11+](https://img.shields.io/pypi/pyversions/anvl-monitor.svg)](https://pypi.org/project/anvl-monitor/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Session monitor for Claude Code — saves your quota by detecting inflated sessions.**
+```
+   █████████   ██████   █████ █████   █████ █████
+  ███▒▒▒▒▒███ ▒▒██████ ▒▒███ ▒▒███   ▒▒███ ▒▒███
+ ▒███    ▒███  ▒███▒███ ▒███  ▒███    ▒███  ▒███
+ ▒███████████  ▒███▒▒███▒███  ▒███    ▒███  ▒███
+ ▒███▒▒▒▒▒███  ▒███ ▒▒██████  ▒▒███   ███   ▒███
+ ▒███    ▒███  ▒███  ▒▒█████   ▒▒▒█████▒    ▒███      █
+ █████   █████ █████  ▒▒█████    ▒▒███      ███████████
+▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒    ▒▒▒▒▒      ▒▒▒      ▒▒▒▒▒▒▒▒▒▒▒
+                  ⚒ forged by IronDevz
+```
 
-Developed by **IronDevz**
+**Session monitor for Claude Code — saves your quota by detecting inflated sessions.**
 
 ---
 
@@ -21,8 +31,36 @@ On turn 1, this might be 150K tokens. By turn 20, it's 500K. By turn 50, you're 
 
 ## Quick start
 
+### 1. Install
+
 ```bash
 pip install anvl-monitor
+```
+
+### 2. Verify it works
+
+```bash
+anvl --version
+```
+
+If you get `anvl: command not found` (or similar), Python's Scripts folder isn't in your PATH. Use this instead:
+
+```bash
+python -m anvl --version
+```
+
+> **Windows users:** `pip install` puts `anvl.exe` in Python's `Scripts/` folder (e.g. `C:\Users\YOU\AppData\Local\Programs\Python\Python313\Scripts\`). If `anvl` isn't recognized, either:
+> - Use `python -m anvl` everywhere (always works), or
+> - Add the Scripts folder to your PATH:
+>   ```powershell
+>   # PowerShell (run once, then restart terminal)
+>   $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+>   [Environment]::SetEnvironmentVariable("Path", "$env:Path;$scripts", "User")
+>   ```
+
+### 3. Initialize
+
+```bash
 anvl init
 ```
 
@@ -146,16 +184,18 @@ This gives the new session full context without carrying the token debt.
 ## Installation
 
 ```bash
-# From PyPI
+# From PyPI (recommended)
 pip install anvl-monitor
 
-# From source
-git clone https://github.com/jumontes/anvl.git
+# From source (for development)
+git clone https://github.com/juanlumanmx29/anvl.git
 cd anvl
 pip install -e .
 ```
 
 **Requirements:** Python 3.11+ | Only dependency: [rich](https://github.com/Textualize/rich) (installed automatically)
+
+> **Note:** On all platforms, `python -m anvl` works as an alternative to the `anvl` command.
 
 ---
 
@@ -254,9 +294,6 @@ Set `handoff_waste_threshold` to a very high number (e.g., 9999) in your config.
 **Q: How much quota does session rotation actually save?**
 Depends on session length. A 50-turn session that gets rotated at turn 25 typically saves 40-60% of what it would have consumed. Run `anvl sessions` to see estimated savings.
 
-**Q: Can I use ANVL with Clauditor?**
-Yes, but there's no reason to — ANVL covers the same functionality. If both are installed, both hooks will fire.
-
 ---
 
 ## License
@@ -265,4 +302,4 @@ MIT — see [LICENSE](LICENSE)
 
 ---
 
-Developed by **IronDevz**
+⚒ Forged by **IronDevz**

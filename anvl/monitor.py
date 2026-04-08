@@ -22,19 +22,9 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .analyzer import format_tokens
+from .branding import styled_banner, styled_subtitle, styled_tagline
 from .calibration import DEFAULT_BASELINE, get_calibration_info
 from .sessions import collect_all_sessions, compute_savings
-
-ANVL_BANNER = (
-    "   █████████   ██████   █████ █████   █████ █████\n"
-    "  ███▒▒▒▒▒███ ▒▒██████ ▒▒███ ▒▒███   ▒▒███ ▒▒███\n"
-    " ▒███    ▒███  ▒███▒███ ▒███  ▒███    ▒███  ▒███\n"
-    " ▒███████████  ▒███▒▒███▒███  ▒███    ▒███  ▒███\n"
-    " ▒███▒▒▒▒▒███  ▒███ ▒▒██████  ▒▒███   ███   ▒███\n"
-    " ▒███    ▒███  ▒███  ▒▒█████   ▒▒▒█████▒    ▒███      █\n"
-    " █████   █████ █████  ▒▒█████    ▒▒███      ███████████\n"
-    "▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒    ▒▒▒▒▒      ▒▒▒      ▒▒▒▒▒▒▒▒▒▒▒"
-)
 
 
 def _health_bar(pct: int, color: str, bar_len: int = 20) -> str:
@@ -131,7 +121,9 @@ def build_monitor_display() -> Group:
 
     # Compose panel content
     content_parts = [
-        Align.center(Text(ANVL_BANNER, style="bold white")),
+        Align.center(styled_banner()),
+        Align.center(styled_tagline()),
+        Align.center(styled_subtitle()),
         Text(""),
         Text.from_markup(header),
         Text(""),
@@ -142,7 +134,7 @@ def build_monitor_display() -> Group:
     panel = Panel(
         Group(*content_parts),
         subtitle="[dim]Ctrl+C to exit  │  Refreshes every 2s[/dim]",
-        border_style="white",
+        border_style="#00afff",
     )
 
     parts: list = [panel]
@@ -164,7 +156,6 @@ def build_monitor_display() -> Group:
             "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier vs fresh session[/dim]"
         )
     )
-    parts.append(Text.from_markup("  [dim]IronDevz[/dim]"))
 
     return Group(*parts)
 
