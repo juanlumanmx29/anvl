@@ -201,8 +201,42 @@ def cmd_report(args: argparse.Namespace) -> None:
     generate_report(cwd)
 
 
+CLAUDE_MD_CONTENT = """\
+# ANVL Session Monitor
+
+ANVL monitors this session's health. When ANVL reports the session is inflated:
+1. Finish your current task
+2. The handoff has been saved to handoff.md
+3. Suggest the user start a new conversation
+
+When the user says "continue" or "read handoff.md":
+1. Read handoff.md for full context
+2. Continue the work described there
+"""
+
+
+def _write_claude_md(cwd: Path | None = None) -> Path | None:
+    """Write or update CLAUDE.md with ANVL instructions."""
+    target_dir = cwd or Path.cwd()
+    claude_md = target_dir / "CLAUDE.md"
+
+    marker = "# ANVL Session Monitor"
+
+    if claude_md.exists():
+        content = claude_md.read_text(encoding="utf-8")
+        if marker in content:
+            return claude_md  # Already has ANVL section
+        # Append to existing CLAUDE.md
+        content = content.rstrip() + "\n\n" + CLAUDE_MD_CONTENT
+        claude_md.write_text(content, encoding="utf-8")
+    else:
+        claude_md.write_text(CLAUDE_MD_CONTENT, encoding="utf-8")
+
+    return claude_md
+
+
 def cmd_init(args: argparse.Namespace) -> None:
-    """First-time setup: create config and install hook."""
+    """First-time setup: create config, install hooks, write CLAUDE.md."""
     from .config import save_default_config, ANVL_CONFIG_FILE
     from .hooks import install_hook
 
@@ -215,23 +249,29 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     # Step 1: Config
     save_default_config()
-    console.print(f"  [green]\u2713[/green] Config created at [cyan]{ANVL_CONFIG_FILE}[/cyan]")
+    console.print(f"  [green]+[/green] Config created at [cyan]{ANVL_CONFIG_FILE}[/cyan]")
 
-    # Step 2: Hook
+    # Step 2: Hooks
     install_hook()
-    console.print("  [green]\u2713[/green] Hook installed in Claude Code settings")
+    console.print("  [green]+[/green] Hooks installed in Claude Code settings")
 
-    # Step 3: Quick start guide
+    # Step 3: CLAUDE.md
+    cwd = Path(args.cwd) if args.cwd else None
+    claude_md = _write_claude_md(cwd)
+    if claude_md:
+        console.print(f"  [green]+[/green] CLAUDE.md updated at [cyan]{claude_md}[/cyan]")
+
+    # Step 4: Quick start guide
     console.print("")
     console.print(Panel(
         "[bold]Quick start:[/bold]\n\n"
-        "  [cyan]anvl status[/cyan]      \u2014 Check current session health\n"
-        "  [cyan]anvl sessions[/cyan]    \u2014 See all sessions with usage stats\n"
-        "  [cyan]anvl monitor[/cyan]     \u2014 Live terminal monitor\n"
-        "  [cyan]anvl dashboard[/cyan]   \u2014 Web dashboard at localhost:3000\n"
-        "  [cyan]anvl handoff[/cyan]     \u2014 Generate session summary for rotation\n\n"
+        "  [cyan]anvl status[/cyan]      - Check current session health\n"
+        "  [cyan]anvl sessions[/cyan]    - See all sessions with usage stats\n"
+        "  [cyan]anvl monitor[/cyan]     - Live terminal monitor\n"
+        "  [cyan]anvl dashboard[/cyan]   - Web dashboard at localhost:3000\n"
+        "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
         "ANVL will now alert you when a session gets inflated.\n"
-        "Green (<3x) \u2192 Yellow (3-7x) \u2192 Red (>7x waste factor)",
+        "Sessions are blocked automatically when critically inflated.",
         title="Setup complete",
         border_style="green",
     ))
@@ -268,11 +308,11 @@ def cmd_sessions(args: argparse.Namespace) -> None:
 
     # Count active and inflated sessions
     active = [s for s in summaries if s.is_active]
-    inflated = [s for s in active if s.waste_factor > 7]
+    inflated = [s for s in active if s.waste_factor > 5]
 
     header_lines = [
         f"Active sessions: [bold]{len(active)}[/bold] | "
-        f"Inflated (>7x waste): [bold {'red' if inflated else 'green'}]{len(inflated)}[/bold {'red' if inflated else 'green'}]",
+        f"Inflated (>5x cost): [bold {'red' if inflated else 'green'}]{len(inflated)}[/bold {'red' if inflated else 'green'}]",
     ]
     if inflated:
         worst = max(inflated, key=lambda s: s.waste_factor)

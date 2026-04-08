@@ -1,78 +1,103 @@
 """Live terminal monitor for Claude Code sessions using rich."""
 
+import os
+import sys
 import time
 from pathlib import Path
 
+# Ensure UTF-8 output on Windows
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
 from rich.console import Console
-from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from .analyzer import SessionMetrics, analyze_session, format_tokens
+from .config import load_config
 from .parser import SessionData, parse_session_file
+from .sessions import collect_all_sessions
 
 
-def build_header(metrics: SessionMetrics, session: SessionData) -> Panel:
-    """Build header panel with session info and waste gauge."""
-    semaphore_colors = {"green": "green", "yellow": "yellow", "red": "red"}
-    color = semaphore_colors[metrics.semaphore]
+HEALTH_LABELS = {
+    "green": "Healthy",
+    "yellow": "Inflating",
+    "red": "Critical",
+}
 
-    # Waste gauge bar
-    max_waste_display = 20.0
-    filled = min(int(metrics.current_waste_factor / max_waste_display * 20), 20)
-    bar = "\u2588" * filled + "\u2591" * (20 - filled)
+
+def build_monitor_panel(
+    metrics: SessionMetrics, session: SessionData, config: dict
+) -> Panel:
+    """Build a compact monitor panel with semaphore health."""
+    color = metrics.semaphore
+    label = HEALTH_LABELS[color]
+
+    title = metrics.ai_title or "Untitled"
+    if len(title) > 45:
+        title = title[:42] + "..."
 
     lines = [
-        f"Session: [cyan]{metrics.session_id[:12]}...[/cyan] | "
-        f'"{metrics.ai_title}"',
-        f"Branch: [dim]{session.git_branch}[/dim] | Turns: [bold]{metrics.turn_count}[/bold]",
         "",
-        f"Waste: [{color}]{bar}[/{color}] [{color}][bold]{metrics.current_waste_factor:.1f}x[/bold][/{color}]"
-        f"  (avg: {metrics.average_waste_factor:.1f}x, trend: {metrics.trend})",
+        f'  Session: [bold]"{title}"[/bold]',
+        f"  Branch: [dim]{session.git_branch or '-'}[/dim]  |  "
+        f"Turns: [bold]{metrics.turn_count}[/bold]  |  "
+        f"Input: [bold]{format_tokens(metrics.total_input_tokens)}[/bold]  |  "
+        f"Output: [bold]{format_tokens(metrics.total_output_tokens)}[/bold]",
         "",
-        f"Input: [bold]{format_tokens(metrics.total_input_tokens)}[/bold] | "
-        f"Output: [bold]{format_tokens(metrics.total_output_tokens)}[/bold] | "
-        f"Cache read: [bold]{format_tokens(metrics.total_cache_read)}[/bold]",
+        f"  Session Health:  [{color}][bold]{label}[/bold][/{color}]",
+        "",
     ]
-    return Panel("\n".join(lines), title="ANVL Monitor", border_style=color)
+
+    return Panel(
+        "\n".join(lines),
+        title="ANVL - IronDevz",
+        subtitle="Ctrl+C to exit",
+        border_style=color,
+    )
 
 
-def build_turn_table(metrics: SessionMetrics) -> Table:
-    """Build token usage table for recent turns."""
+def build_sessions_table() -> Table:
+    """Build a compact table of all active sessions."""
+    summaries = collect_all_sessions()
+    active = [s for s in summaries if s.is_active]
+
     table = Table(
-        title="Token Usage per Turn (recent)",
+        title="Active Sessions",
         show_header=True,
         header_style="bold",
         expand=True,
+        border_style="dim",
     )
-    table.add_column("Turn", justify="right", style="dim", width=5)
-    table.add_column("Cache Read", justify="right", width=12)
-    table.add_column("Bar", width=30)
-    table.add_column("Output", justify="right", width=10)
-    table.add_column("Waste", justify="right", width=10)
+    table.add_column("", width=2)
+    table.add_column("Project", max_width=18)
+    table.add_column("Title", max_width=30)
+    table.add_column("Turns", justify="right", width=6)
+    table.add_column("Health", width=12)
 
-    recent = metrics.per_turn[-15:]
-    if not recent:
+    if not active:
+        table.add_row("", "[dim]No active sessions[/dim]", "", "", "")
         return table
 
-    max_cache_read = max((t.cache_read for t in recent), default=1) or 1
-
-    for tm in recent:
-        bar_len = int(tm.cache_read / max_cache_read * 25)
-        bar_color = "green" if tm.waste_factor < 3 else "yellow" if tm.waste_factor <= 7 else "red"
-        bar = f"[{bar_color}]{'\u2588' * bar_len}{'░' * (25 - bar_len)}[/{bar_color}]"
-
-        waste_style = bar_color
-        tool_marker = " \u2699" if tm.is_tool_only else ""
+    for s in active:
+        color = s.efficiency
+        label = HEALTH_LABELS.get(color, "?")
+        dot = f"[{color}]*[/{color}]"
+        health_str = f"[{color}]{label}[/{color}]"
 
         table.add_row(
-            str(tm.turn_index),
-            format_tokens(tm.cache_read),
-            bar,
-            format_tokens(tm.output_tokens),
-            f"[{waste_style}]{tm.waste_factor:.1f}x{tool_marker}[/{waste_style}]",
+            dot,
+            s.project[:18],
+            (s.ai_title or "Untitled")[:30],
+            str(s.turns),
+            health_str,
         )
 
     return table
@@ -81,6 +106,7 @@ def build_turn_table(metrics: SessionMetrics) -> Table:
 def monitor_session(session_path: Path, refresh_interval: float = 2.0) -> None:
     """Main monitor loop with rich Live display."""
     console = Console()
+    config = load_config()
     last_mtime = 0.0
 
     console.print(f"[dim]Monitoring: {session_path}[/dim]")
@@ -98,12 +124,11 @@ def monitor_session(session_path: Path, refresh_interval: float = 2.0) -> None:
                     session = parse_session_file(session_path)
                     metrics = analyze_session(session)
 
-                # Build display
-                header = build_header(metrics, session)
-                table = build_turn_table(metrics)
+                panel = build_monitor_panel(metrics, session, config)
+                sessions_table = build_sessions_table()
 
                 from rich.console import Group
-                live.update(Group(header, table))
+                live.update(Group(panel, sessions_table))
 
                 time.sleep(refresh_interval)
         except KeyboardInterrupt:

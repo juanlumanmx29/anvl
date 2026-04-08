@@ -87,83 +87,14 @@
         .view { display: none; }
         .view.active { display: block; }
 
-        /* === Usage Panel === */
-        .usage-panel {
+        /* === Alert Panel === */
+        .alert-panel {
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 24px;
             margin-bottom: 24px;
         }
-
-        .usage-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 16px;
-        }
-
-        .usage-header h2 { font-size: 16px; color: var(--text-dim); }
-
-        .usage-pct {
-            font-size: 48px;
-            font-weight: 800;
-            line-height: 1;
-        }
-
-        .usage-details {
-            display: flex;
-            gap: 32px;
-            margin-top: 8px;
-            font-size: 14px;
-            color: var(--text-dim);
-        }
-
-        .usage-details span strong { color: var(--text); }
-
-        .usage-bar-container {
-            margin-top: 16px;
-        }
-
-        .usage-bar {
-            height: 16px;
-            background: #21262d;
-            border-radius: 8px;
-            overflow: hidden;
-            position: relative;
-        }
-
-        .usage-bar-fill {
-            height: 100%;
-            border-radius: 8px;
-            transition: width 1s ease, background-color 0.5s ease;
-            background: linear-gradient(90deg, var(--green), var(--blue));
-        }
-
-        .usage-bar-fill.warn { background: linear-gradient(90deg, var(--yellow), var(--red)); }
-        .usage-bar-fill.danger { background: linear-gradient(90deg, var(--red), #da3633); }
-
-        .usage-bar-markers {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 6px;
-            font-size: 11px;
-            color: var(--text-dim);
-        }
-
-        .reset-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            background: rgba(88, 166, 255, 0.1);
-            border: 1px solid rgba(88, 166, 255, 0.3);
-            border-radius: 20px;
-            padding: 6px 14px;
-            font-size: 13px;
-            color: var(--blue);
-        }
-
-        .reset-badge .clock { font-size: 16px; }
 
         /* === Stats Grid === */
         .stats-grid {
@@ -359,18 +290,6 @@
             50% { opacity: 0.6; }
         }
 
-        .savings-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            background: rgba(63,185,80,0.1);
-            border: 1px solid rgba(63,185,80,0.3);
-            border-radius: 20px;
-            padding: 6px 14px;
-            font-size: 13px;
-            color: var(--green);
-        }
-
         .empty-state {
             text-align: center;
             padding: 60px 20px;
@@ -428,47 +347,8 @@
 
     <!-- ===== GLOBAL VIEW ===== -->
     <div id="view-global" class="view active">
-        <!-- Quota usage panel -->
-        <div class="usage-panel">
-            <div class="usage-header">
-                <div>
-                    <h2>Rolling Window Usage</h2>
-                    <div class="usage-pct" id="g-usage-pct">--</div>
-                    <div class="usage-details">
-                        <span>Weighted: <strong id="g-weighted-total">--</strong> / <strong id="g-weighted-limit">--</strong></span>
-                        <span>Window: <strong id="g-window-hours">--</strong>h</span>
-                        <span id="g-savings-container" style="display:none;">
-                            Saved by handoffs: <strong id="g-savings-pct" class="color-green">--</strong>
-                        </span>
-                    </div>
-                </div>
-                <div style="text-align:right;">
-                    <div class="reset-badge">
-                        <span class="clock">&#128339;</span>
-                        Reset in <strong id="g-reset-time">--</strong>
-                    </div>
-                    <div style="margin-top:8px;">
-                        <span id="g-active-count" style="font-size:32px; font-weight:700;">--</span>
-                        <span style="font-size:12px; color:var(--text-dim);"> active</span>
-                    </div>
-                </div>
-            </div>
-            <div class="usage-bar-container">
-                <div class="usage-bar">
-                    <div class="usage-bar-fill" id="g-usage-bar" style="width:0%"></div>
-                </div>
-                <div class="usage-bar-markers">
-                    <span>0%</span>
-                    <span>25%</span>
-                    <span>50%</span>
-                    <span style="color:var(--yellow)">75%</span>
-                    <span style="color:var(--red)">100%</span>
-                </div>
-            </div>
-        </div>
-
         <!-- Alert panel for inflated sessions -->
-        <div id="g-alert-panel" class="usage-panel" style="display:none; border-color:var(--red);">
+        <div id="g-alert-panel" class="alert-panel" style="display:none; border-color:var(--red);">
             <div style="display:flex; align-items:center; gap:12px;">
                 <span style="font-size:24px;">&#9888;&#65039;</span>
                 <div>
@@ -551,10 +431,10 @@
                 </div>
                 <div class="gauge-markers">
                     <span>0x</span>
-                    <span style="color:var(--green)">3x healthy</span>
-                    <span style="color:var(--yellow)">7x inflating</span>
-                    <span style="color:var(--red)">15x critical</span>
-                    <span>20x+</span>
+                    <span style="color:var(--green)">2x healthy</span>
+                    <span style="color:var(--yellow)">5x inflating</span>
+                    <span style="color:var(--red)">8x critical</span>
+                    <span>10x+</span>
                 </div>
             </div>
 
@@ -613,8 +493,8 @@
         }
 
         function wasteColor(waste) {
-            if (waste < 3) return 'green';
-            if (waste <= 7) return 'yellow';
+            if (waste < 2) return 'green';
+            if (waste <= 5) return 'yellow';
             return 'red';
         }
 
@@ -680,7 +560,7 @@
             } else if (currentFilter === 'today') {
                 sessions = sessions.filter(s => isToday(s.started_at));
             } else if (currentFilter === 'inflated') {
-                sessions = sessions.filter(s => s.waste_factor > 7);
+                sessions = sessions.filter(s => s.waste_factor > 5);
             }
 
             document.getElementById('g-session-count').textContent = sessions.length;
@@ -694,7 +574,7 @@
                 const started = timeAgo(s.started_at);
                 const eff = s.efficiency || 'green';
                 const waste = s.waste_factor || 0;
-                const barPct = Math.min(waste / 20 * 100, 100);
+                const barPct = Math.min(waste / 10 * 100, 100);
                 const effColor = eff === 'green' ? 'var(--green)' : eff === 'yellow' ? 'var(--yellow)' : 'var(--red)';
                 const effBar = `
                     <div style="display:flex; align-items:center; gap:6px;">
@@ -729,30 +609,7 @@
 
                 const sessions = globalData.sessions || [];
                 const active = sessions.filter(s => s.is_active);
-                const inflated = active.filter(s => s.waste_factor > 7);
-
-                // Usage bar
-                const usagePct = globalData.usage_pct || 0;
-                document.getElementById('g-usage-pct').textContent = usagePct.toFixed(1) + '%';
-                document.getElementById('g-usage-pct').className = 'usage-pct color-' + (usagePct < 50 ? 'green' : usagePct < 80 ? 'yellow' : 'red');
-
-                const bar = document.getElementById('g-usage-bar');
-                bar.style.width = Math.min(usagePct, 100) + '%';
-                bar.className = 'usage-bar-fill' + (usagePct >= 80 ? ' danger' : usagePct >= 50 ? ' warn' : '');
-
-                document.getElementById('g-weighted-total').textContent = formatTokens(globalData.weighted_total || 0);
-                document.getElementById('g-weighted-limit').textContent = formatTokens(globalData.weighted_limit || 0);
-                document.getElementById('g-window-hours').textContent = globalData.window_hours || 5;
-                document.getElementById('g-reset-time').textContent = globalData.time_remaining || '--';
-
-                // Savings
-                if (globalData.savings_pct > 0) {
-                    document.getElementById('g-savings-container').style.display = 'inline';
-                    document.getElementById('g-savings-pct').textContent = '~' + globalData.savings_pct + '%';
-                }
-
-                // Active count
-                document.getElementById('g-active-count').textContent = active.length;
+                const inflated = active.filter(s => s.waste_factor > 5);
 
                 // Alert for inflated
                 const panel = document.getElementById('g-alert-panel');
@@ -805,7 +662,7 @@
                 document.getElementById('branch-value').textContent = 'Branch: ' + (data.git_branch || '-');
 
                 // Gauge
-                const pct = Math.min(data.waste_factor / 20 * 100, 100);
+                const pct = Math.min(data.waste_factor / 10 * 100, 100);
                 const gaugeFill = document.getElementById('gauge-fill');
                 gaugeFill.style.width = pct + '%';
                 gaugeFill.style.backgroundColor = cssVar(color);
@@ -897,8 +754,8 @@
                                 ...chartOptions('Waste', v => v + 'x').plugins,
                                 annotation: {
                                     annotations: {
-                                        line3: { type: 'line', yMin: 3, yMax: 3, borderColor: cssVar('green'), borderDash: [5,5], borderWidth: 1 },
-                                        line7: { type: 'line', yMin: 7, yMax: 7, borderColor: cssVar('yellow'), borderDash: [5,5], borderWidth: 1 },
+                                        line2: { type: 'line', yMin: 2, yMax: 2, borderColor: cssVar('green'), borderDash: [5,5], borderWidth: 1 },
+                                        line5: { type: 'line', yMin: 5, yMax: 5, borderColor: cssVar('yellow'), borderDash: [5,5], borderWidth: 1 },
                                     }
                                 }
                             }

@@ -41,16 +41,27 @@ class SessionSummary:
 
     @property
     def waste_factor(self) -> float:
-        """Simple waste: total_input / output."""
-        return self.total_input / max(self.total_output, 1)
+        """Cost-weighted waste: weighted_input_cost / weighted_output_cost.
+
+        Uses token pricing weights so cache reads (90% cheaper) don't
+        inflate the metric.  A ratio of 1x means input cost equals output
+        cost — perfectly balanced.  Values above ~5x signal real waste.
+        """
+        weighted_input = (
+            self.raw_input * TOKEN_WEIGHTS["input"]
+            + self.cache_read * TOKEN_WEIGHTS["cache_read"]
+            + self.cache_creation * TOKEN_WEIGHTS["cache_creation"]
+        )
+        weighted_output = self.total_output * TOKEN_WEIGHTS["output"]
+        return weighted_input / max(weighted_output, 1)
 
     @property
     def efficiency(self) -> str:
-        """Session health: green/yellow/red based on waste."""
+        """Session health: green/yellow/red based on cost-weighted waste."""
         w = self.waste_factor
-        if w < 3:
+        if w < 2:
             return "green"
-        elif w <= 7:
+        elif w <= 5:
             return "yellow"
         return "red"
 
@@ -66,7 +77,11 @@ class SessionSummary:
 
 
 def _quick_token_sum(jsonl_path: Path) -> dict:
-    """Fast token counting from JSONL. Returns dict with detailed breakdown."""
+    """Fast token counting from JSONL. Returns dict with detailed breakdown.
+
+    Deduplicates by requestId — only the last record per API call is kept,
+    matching analyzer.py behavior and avoiding double-counting streaming chunks.
+    """
     totals = {
         "input": 0,        # raw input_tokens
         "cache_read": 0,
@@ -74,6 +89,9 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
         "output": 0,
         "turns": 0,
     }
+
+    # Track usage per requestId; keep latest (has final usage)
+    request_usage: dict[str, dict] = {}
 
     try:
         with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -98,12 +116,25 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
                 elif rtype == "assistant":
                     usage = record.get("message", {}).get("usage", {})
                     if usage:
-                        totals["input"] += usage.get("input_tokens", 0)
-                        totals["cache_read"] += usage.get("cache_read_input_tokens", 0)
-                        totals["cache_creation"] += usage.get("cache_creation_input_tokens", 0)
-                        totals["output"] += usage.get("output_tokens", 0)
+                        request_id = record.get("requestId", "")
+                        if request_id:
+                            # Overwrite: last chunk per requestId has final usage
+                            request_usage[request_id] = usage
+                        else:
+                            # No requestId — count directly (shouldn't happen)
+                            totals["input"] += usage.get("input_tokens", 0)
+                            totals["cache_read"] += usage.get("cache_read_input_tokens", 0)
+                            totals["cache_creation"] += usage.get("cache_creation_input_tokens", 0)
+                            totals["output"] += usage.get("output_tokens", 0)
     except OSError:
         pass
+
+    # Sum deduplicated usage
+    for usage in request_usage.values():
+        totals["input"] += usage.get("input_tokens", 0)
+        totals["cache_read"] += usage.get("cache_read_input_tokens", 0)
+        totals["cache_creation"] += usage.get("cache_creation_input_tokens", 0)
+        totals["output"] += usage.get("output_tokens", 0)
 
     return totals
 

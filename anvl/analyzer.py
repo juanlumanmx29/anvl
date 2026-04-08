@@ -37,15 +37,25 @@ class SessionMetrics:
 
 
 def compute_waste(usage: TokenUsage) -> float:
-    """Compute waste factor: total_input / max(output, 1)."""
-    return usage.total_input / max(usage.output_tokens, 1)
+    """Compute cost-weighted waste factor.
+
+    Weights cache_read at 0.1x (90% cheaper) and output at 5x
+    to reflect actual pricing.  Returns weighted_input / weighted_output.
+    """
+    weighted_input = (
+        usage.input_tokens * 1.0
+        + usage.cache_read_input_tokens * 0.1
+        + usage.cache_creation_input_tokens * 1.25
+    )
+    weighted_output = usage.output_tokens * 5.0
+    return weighted_input / max(weighted_output, 1)
 
 
 def compute_semaphore(waste: float) -> str:
-    """Green < 3x, yellow 3-7x, red > 7x."""
-    if waste < 3:
+    """Green < 2x, yellow 2-5x, red > 5x (cost-weighted)."""
+    if waste < 2:
         return "green"
-    elif waste <= 7:
+    elif waste <= 5:
         return "yellow"
     return "red"
 
@@ -119,11 +129,11 @@ def analyze_session(session: SessionData) -> SessionMetrics:
         if not turn.is_tool_only:
             meaningful_wastes.append(waste)
 
-    # Current waste: last non-tool-only turn
-    for tm in reversed(metrics.per_turn):
-        if not tm.is_tool_only:
-            metrics.current_waste_factor = tm.waste_factor
-            break
+    # Current waste: cumulative cost-weighted ratio for entire session
+    raw_input = metrics.total_input_tokens - metrics.total_cache_read - metrics.total_cache_creation
+    weighted_input = raw_input * 1.0 + metrics.total_cache_read * 0.1 + metrics.total_cache_creation * 1.25
+    weighted_output = metrics.total_output_tokens * 5.0
+    metrics.current_waste_factor = weighted_input / max(weighted_output, 1)
 
     # Average waste (excluding tool-only turns)
     if meaningful_wastes:
