@@ -161,36 +161,10 @@ def cmd_handoff(args: argparse.Namespace) -> None:
 
 
 def cmd_monitor(args: argparse.Namespace) -> None:
-    """Launch live terminal monitor."""
+    """Launch live terminal monitor. Works from any directory."""
     from .monitor import monitor_session
-    from .sessions import collect_all_sessions
 
-    cwd = Path(args.cwd) if args.cwd else None
-    result = find_active_session(cwd)
-    if result is None:
-        result = find_latest_session(cwd)
-
-    # Fallback: find any active session across all projects
-    if result is None:
-        summaries = collect_all_sessions()
-        active = [s for s in summaries if s.is_active]
-        if active:
-            from .config import find_project_dir
-            for s in active:
-                if s.cwd:
-                    project_dir = find_project_dir(Path(s.cwd))
-                    if project_dir:
-                        candidate = project_dir / f"{s.session_id}.jsonl"
-                        if candidate.exists():
-                            result = (candidate, s.session_id)
-                            break
-
-    if result is None:
-        console.print("[red]No session found. Start a Claude Code session first.[/red]")
-        sys.exit(1)
-
-    jsonl_path, _ = result
-    monitor_session(jsonl_path, refresh_interval=args.interval)
+    monitor_session(refresh_interval=args.interval)
 
 
 def cmd_report(args: argparse.Namespace) -> None:

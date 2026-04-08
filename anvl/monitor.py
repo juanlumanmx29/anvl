@@ -27,13 +27,16 @@ from .calibration import get_calibrated_baseline, get_calibration_info, DEFAULT_
 from .config import load_config
 from .sessions import collect_all_sessions, compute_savings
 
-ANVL_BANNER = """\
-[white] █████╗ ███╗   ██╗██╗   ██╗██╗[/white]
-[white]██╔══██╗████╗  ██║██║   ██║██║[/white]
-[white]███████║██╔██╗ ██║██║   ██║██║[/white]
-[white]██╔══██║██║╚██╗██║╚██╗ ██╔╝██║[/white]
-[white]██║  ██║██║ ╚████║ ╚████╔╝ ███████╗[/white]
-[white]╚═╝  ╚═╝╚═╝  ╚═══╝  ╚═══╝  ╚══════╝[/white]"""
+ANVL_BANNER = (
+    "   █████████   ██████   █████ █████   █████ █████\n"
+    "  ███▒▒▒▒▒███ ▒▒██████ ▒▒███ ▒▒███   ▒▒███ ▒▒███\n"
+    " ▒███    ▒███  ▒███▒███ ▒███  ▒███    ▒███  ▒███\n"
+    " ▒███████████  ▒███▒▒███▒███  ▒███    ▒███  ▒███\n"
+    " ▒███▒▒▒▒▒███  ▒███ ▒▒██████  ▒▒███   ███   ▒███\n"
+    " ▒███    ▒███  ▒███  ▒▒█████   ▒▒▒█████▒    ▒███      █\n"
+    " █████   █████ █████  ▒▒█████    ▒▒███      ███████████\n"
+    "▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒    ▒▒▒▒▒      ▒▒▒      ▒▒▒▒▒▒▒▒▒▒▒"
+)
 
 
 def _health_bar(pct: int, color: str, bar_len: int = 20) -> str:
@@ -140,7 +143,7 @@ def build_monitor_display() -> Group:
 
     # Compose panel content
     content_parts = [
-        Align.center(Text.from_markup(ANVL_BANNER)),
+        Align.center(Text(ANVL_BANNER, style="bold white")),
         Text(""),
         Text.from_markup(header),
         Text(""),
@@ -177,8 +180,8 @@ def build_monitor_display() -> Group:
     return Group(*parts)
 
 
-def monitor_session(session_path: Path, refresh_interval: float = 2.0) -> None:
-    """Main monitor loop with rich Live display."""
+def monitor_session(refresh_interval: float = 2.0) -> None:
+    """Main monitor loop with rich Live display. Works from any directory."""
     console = Console()
 
     console.print("[dim]Press Ctrl+C to exit[/dim]\n")

@@ -47,22 +47,33 @@ class SessionSummary:
 
     @property
     def session_baseline(self) -> int:
-        """Median tokens/turn from first 5 turns of this session."""
+        """Second lowest tokens/turn from first 5 turns.
+
+        Using the 2nd lowest (not min, not median) because:
+        - Min can be an anomalously cheap turn (skews too low)
+        - Median gets pulled up by heavy early turns like handoff reads
+        - 2nd lowest is robust: ignores one outlier on each end
+        """
         window = 5
         if len(self.per_turn_tokens) < window:
             return 0
-        return int(statistics.median(self.per_turn_tokens[:window]))
+        return sorted(self.per_turn_tokens[:window])[1]
 
     @property
     def effective_baseline(self) -> int:
         """Baseline used for waste calculation.
 
-        Prefers session's own baseline (first 5 turns) when available,
-        because it reflects the actual cost of THIS project. A large
-        project naturally costs more per turn than a small one.
-        Falls back to calibrated global baseline for young sessions.
+        Uses max(session_baseline, calibrated_baseline):
+        - Session baseline captures this project's natural cost
+        - Global calibrated acts as a floor so anomalously cheap early
+          turns don't make the baseline unrealistically low
+        Falls back to calibrated for young sessions (<5 turns).
         """
-        return self.session_baseline or self.calibrated_baseline
+        sb = self.session_baseline
+        cb = self.calibrated_baseline
+        if sb and cb:
+            return max(sb, cb)
+        return sb or cb
 
     @property
     def waste_factor(self) -> float:
