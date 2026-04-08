@@ -11,7 +11,6 @@ ANVL_CONFIG_FILE = ANVL_CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "waste_threshold": 2,  # Cost-weighted: green < 2x, yellow 2-5x, red > 5x
-    "dashboard_port": 3000,
     "handoff_template": "default",
     "auto_detect_project": True,
     "window_hours": 5,  # Rolling window size (Max 5x = 5h)

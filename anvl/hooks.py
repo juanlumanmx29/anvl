@@ -143,17 +143,16 @@ def hook_entrypoint() -> None:
     if not turns_data or len(turns_data) < min_turns:
         return
 
-    # Compute waste: avg last 5 / avg first 5
+    # Compute waste: avg last 5 / min first 5
     window = 5
-    baseline = turns_data[:window]
+    baseline_min = min(turns_data[:window])
     current = turns_data[-window:]
-    baseline_avg = sum(baseline) / len(baseline)
     current_avg = sum(current) / len(current)
 
-    if baseline_avg == 0:
+    if baseline_min == 0:
         return
 
-    waste = current_avg / baseline_avg
+    waste = current_avg / baseline_min
     turns = len(turns_data)
     health_pct = min(100, max(0, int(100 * (block_threshold - waste) / (block_threshold - 1)))) if waste > 1 else 100
 

@@ -103,8 +103,8 @@ def _print_status(metrics: SessionMetrics, session) -> None:
     )
     lines.append(
         f"Waste: [bold {color}]{metrics.waste_factor:.1f}x[/bold {color}] | "
-        f"Started at [dim]{format_tokens(metrics.baseline_per_turn)}/turn[/dim] -> "
-        f"now [bold]{format_tokens(metrics.current_per_turn)}/turn[/bold] | "
+        f"Baseline: [dim]{format_tokens(metrics.baseline_per_turn)}/turn[/dim] | "
+        f"Current: [bold]{format_tokens(metrics.current_per_turn)}/turn[/bold] | "
         f"Trend: {metrics.trend}"
     )
     lines.append("")
@@ -174,18 +174,6 @@ def cmd_monitor(args: argparse.Namespace) -> None:
 
     jsonl_path, _ = result
     monitor_session(jsonl_path, refresh_interval=args.interval)
-
-
-def cmd_dashboard(args: argparse.Namespace) -> None:
-    """Launch web dashboard."""
-    from .web.server import start_server
-
-    cwd = Path(args.cwd) if args.cwd else None
-    from .config import load_config
-
-    config = load_config()
-    port = args.port or config["dashboard_port"]
-    start_server(port=port, cwd=cwd)
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -263,7 +251,6 @@ def cmd_init(args: argparse.Namespace) -> None:
         "  [cyan]anvl status[/cyan]      - Check current session health\n"
         "  [cyan]anvl sessions[/cyan]    - See all sessions with usage stats\n"
         "  [cyan]anvl monitor[/cyan]     - Live terminal monitor\n"
-        "  [cyan]anvl dashboard[/cyan]   - Web dashboard at localhost:3000\n"
         "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
         "ANVL will now alert you when a session gets inflated.\n"
         "Sessions are blocked automatically when critically inflated.",
@@ -401,10 +388,6 @@ def main() -> None:
     sp = subparsers.add_parser("monitor", help="Live terminal monitor")
     sp.add_argument("--interval", type=float, default=2.0, help="Refresh interval in seconds")
 
-    # dashboard
-    sp = subparsers.add_parser("dashboard", help="Launch web dashboard")
-    sp.add_argument("--port", type=int, help="Server port")
-
     # sessions
     sp = subparsers.add_parser("sessions", help="Show all sessions with usage stats")
     sp.add_argument("--active", action="store_true", help="Show only active sessions")
@@ -434,7 +417,6 @@ def main() -> None:
         "status": cmd_status,
         "handoff": cmd_handoff,
         "monitor": cmd_monitor,
-        "dashboard": cmd_dashboard,
         "sessions": cmd_sessions,
         "report": cmd_report,
         "install": cmd_install,

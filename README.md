@@ -27,7 +27,7 @@ That's it. ANVL will now monitor all your Claude Code sessions automatically.
 When a session inflates, you'll see messages like:
 
 ```
-[ANVL] This session is getting expensive. Consider starting a new conversation soon.
+[ANVL] Session health: 45% (2.2x waste). Consider starting a new conversation soon.
 ```
 
 And when it's critical:
@@ -43,7 +43,7 @@ And when it's critical:
 ## How it works
 
 ```
-Session inflates (170K tokens/turn)
+Session inflates (tokens/turn growing)
        |
   ANVL detects it automatically
        |
@@ -55,16 +55,17 @@ Session inflates (170K tokens/turn)
        |
   "Read handoff.md and continue where I left off"
        |
-  Fresh session (5K tokens/turn)
+  Fresh session — back to baseline
 ```
 
-ANVL uses Claude Code hooks to monitor every turn. It calculates a cost-weighted health metric that accounts for cache pricing (cache reads cost 90% less).
+ANVL measures **waste** as the ratio of current tokens/turn vs baseline tokens/turn. A fresh session starts at 1.0x. As the conversation grows, each turn sends more tokens — waste goes up, health goes down.
 
-| Health | Status | What happens |
+| Health | Waste | What happens |
 |:---:|:---:|:---|
-| Green | Healthy | Nothing — keep working |
-| Yellow | Inflating | Warning message appears |
-| Red | Critical | Session blocked, handoff saved |
+| 100% | 1x | Fresh session — keep working |
+| 60-100% | 1-5x | Healthy — no alerts |
+| 30-60% | 5-8x | Warning message appears |
+| 0-30% | 8-10x | Session blocked, handoff saved |
 
 ---
 
@@ -93,7 +94,7 @@ anvl init
 
 This does three things:
 1. Creates config at `~/.anvl/config.json`
-2. Installs hooks in Claude Code (`UserPromptSubmit` + `PostToolUse`)
+2. Installs hooks in Claude Code (`UserPromptSubmit`, `PostToolUse`, `SessionStart`)
 3. Writes CLAUDE.md with instructions for Claude to handle handoffs
 
 ---
@@ -106,7 +107,6 @@ This does three things:
 | `anvl status` | Current session health |
 | `anvl sessions` | All sessions with health status |
 | `anvl monitor` | Live terminal monitor |
-| `anvl dashboard` | Web dashboard at localhost:3000 |
 | `anvl handoff` | Generate handoff manually |
 | `anvl report` | Multi-session report |
 
@@ -116,15 +116,7 @@ This does three things:
 anvl monitor
 ```
 
-Shows session health with a simple semaphore (Healthy / Inflating / Critical) and a table of all active sessions. Auto-refreshes every 2 seconds.
-
-### Web dashboard
-
-```bash
-anvl dashboard
-```
-
-Dark-themed dashboard with session list, health indicators, and per-turn token charts.
+Shows session health with a progress bar, tokens/turn comparison, and a table of all active sessions. Auto-refreshes every 2 seconds.
 
 ---
 
@@ -134,9 +126,9 @@ File: `~/.anvl/config.json`
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `waste_threshold` | Yellow alert threshold | 2 |
+| `waste_threshold` | Yellow alert threshold (waste factor) | 2 |
 | `handoff_waste_threshold` | Auto-handoff + block threshold | 10 |
-| `dashboard_port` | Web dashboard port | 3000 |
+| `min_turns_for_alert` | Minimum turns before alerting | 5 |
 
 ---
 
@@ -144,18 +136,17 @@ File: `~/.anvl/config.json`
 
 ANVL hooks into Claude Code and checks session health on every turn:
 
-1. **Yellow (waste 2-5x):** Informational message
+1. **Health 60-100%:** No alerts — session is healthy
+2. **Health 30-60%:** Warning message
    ```
-   [ANVL] This session is getting expensive. Consider starting a new conversation soon.
+   [ANVL] Session health: 45% (2.2x waste). Consider starting a new conversation soon.
    ```
-
-2. **Red (waste 5-10x):** Generates handoff automatically
+3. **Health <30%:** Generates handoff automatically
    ```
-   [ANVL] This session is inflated. Your work has been saved to handoff.md
+   [ANVL] This session is inflated (5x). Your work has been saved to handoff.md
           Start a new conversation and say: "Read handoff.md and continue where I left off"
    ```
-
-3. **Critical (waste >10x):** Blocks the session (exit code 2)
+4. **Waste ≥10x + 20 turns:** Blocks the session (exit code 2)
    ```
    [ANVL] Session blocked -- too inflated to continue efficiently.
           Handoff saved to handoff.md

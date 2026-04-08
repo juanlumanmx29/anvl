@@ -59,7 +59,12 @@ def _total_tokens(usage: TokenUsage) -> int:
 
 
 def compute_waste_factor(per_turn: list[TurnMetrics], window: int = BASELINE_WINDOW) -> tuple[float, int, int]:
-    """Compute waste as current_avg / baseline_avg (Clauditor formula).
+    """Compute waste as current_avg / baseline_min.
+
+    Baseline is the MINIMUM tokens/turn from the first `window` turns.
+    This represents the "fresh session" cost — the cheapest a turn can be
+    in this environment.  Using min instead of avg prevents inflated starts
+    (e.g., reading handoff.md) from masking real waste.
 
     Returns (waste_factor, baseline_per_turn, current_per_turn).
     With < window turns, waste is always 1.0.
@@ -71,17 +76,15 @@ def compute_waste_factor(per_turn: list[TurnMetrics], window: int = BASELINE_WIN
             return 1.0, avg, avg
         return 1.0, 0, 0
 
-    baseline = meaningful[:window]
+    baseline_min = min(t.total_tokens for t in meaningful[:window])
     current = meaningful[-window:]
-
-    baseline_avg = sum(t.total_tokens for t in baseline) // len(baseline)
     current_avg = sum(t.total_tokens for t in current) // len(current)
 
-    if baseline_avg == 0:
+    if baseline_min == 0:
         return 1.0, 0, current_avg
 
-    waste = round(current_avg / baseline_avg, 1)
-    return max(1.0, waste), baseline_avg, current_avg
+    waste = round(current_avg / baseline_min, 1)
+    return max(1.0, waste), baseline_min, current_avg
 
 
 def compute_health_pct(waste: float, turns: int = 0, threshold: float = 10.0) -> int:

@@ -55,10 +55,6 @@ class TestCLIHelp:
         assert result.returncode == 0
         assert "--interval" in result.stdout
 
-    def test_dashboard_help(self):
-        result = run_anvl("dashboard", "--help")
-        assert result.returncode == 0
-        assert "--port" in result.stdout
 
 
 class TestCLIStatus:

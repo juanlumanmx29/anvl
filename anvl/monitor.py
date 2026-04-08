@@ -52,8 +52,8 @@ def build_monitor_panel(
         "",
         f"  Health: {bar} [{color}][bold]{pct}%[/bold][/{color}]  "
         f"({metrics.waste_factor:.1f}x waste)",
-        f"  [dim]Started at {format_tokens(metrics.baseline_per_turn)}/turn -> "
-        f"now {format_tokens(metrics.current_per_turn)}/turn[/dim]",
+        f"  [dim]Baseline: {format_tokens(metrics.baseline_per_turn)}/turn | "
+        f"Current: {format_tokens(metrics.current_per_turn)}/turn[/dim]",
         "",
     ]
 
