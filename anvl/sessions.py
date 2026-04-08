@@ -42,19 +42,24 @@ class SessionSummary:
 
     @property
     def waste_factor(self) -> float:
-        """Waste: avg tokens/turn (last 5) / min tokens/turn (first 5).
+        """Peak waste: max avg_window / min_baseline across all windows.
 
-        Baseline uses the minimum of the first 5 turns — the "fresh session"
-        cost before context accumulates.
+        Uses minimum of first 5 turns as baseline. Checks every possible
+        5-turn window and keeps the worst — health never improves.
         """
         window = 5
         if len(self.per_turn_tokens) < window:
             return 1.0
         baseline_min = min(self.per_turn_tokens[:window])
-        current = self.per_turn_tokens[-window:]
         if baseline_min == 0:
             return 1.0
-        return max(1.0, round(sum(current) / len(current) / baseline_min, 1))
+        peak = 1.0
+        for i in range(len(self.per_turn_tokens) - window + 1):
+            avg = sum(self.per_turn_tokens[i:i + window]) / window
+            w = avg / baseline_min
+            if w > peak:
+                peak = w
+        return max(1.0, round(peak, 1))
 
     @property
     def health_pct(self) -> int:

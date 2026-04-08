@@ -77,13 +77,26 @@ def compute_waste_factor(per_turn: list[TurnMetrics], window: int = BASELINE_WIN
         return 1.0, 0, 0
 
     baseline_min = min(t.total_tokens for t in meaningful[:window])
-    current = meaningful[-window:]
-    current_avg = sum(t.total_tokens for t in current) // len(current)
 
     if baseline_min == 0:
+        current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
         return 1.0, 0, current_avg
 
-    waste = round(current_avg / baseline_min, 1)
+    # Peak waste: check every possible window position, keep the worst.
+    # Health should never improve — once inflated, it stays inflated.
+    peak_waste = 1.0
+    peak_avg = baseline_min
+    for i in range(len(meaningful) - window + 1):
+        w = meaningful[i:i + window]
+        avg = sum(t.total_tokens for t in w) // len(w)
+        w_factor = avg / baseline_min
+        if w_factor > peak_waste:
+            peak_waste = w_factor
+            peak_avg = avg
+
+    current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
+    # Use peak waste but show current avg for display
+    waste = round(peak_waste, 1)
     return max(1.0, waste), baseline_min, current_avg
 
 
