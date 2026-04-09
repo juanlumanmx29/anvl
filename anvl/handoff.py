@@ -202,7 +202,51 @@ def generate_handoff(
     content = "\n".join(lines)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content, encoding="utf-8")
+
+    # Update CLAUDE.md with handoff section
+    _update_claude_md(output_path.parent, session.ai_title or "previous session")
+
     return output_path
+
+
+# Markers used to delimit the auto-managed handoff section in CLAUDE.md
+_HANDOFF_START = "<!-- anvl:handoff-start -->"
+_HANDOFF_END = "<!-- anvl:handoff-end -->"
+
+
+def _update_claude_md(project_dir: Path, title: str) -> None:
+    """Insert or replace a handoff section in CLAUDE.md.
+
+    The section tells Claude to read handoff.md on session start.
+    """
+    claude_md = project_dir / "CLAUDE.md"
+
+    handoff_section = (
+        f"{_HANDOFF_START}\n"
+        f"## Handoff\n"
+        f"\n"
+        f"A previous session left a handoff. Read `handoff.md` for full context\n"
+        f"and continue the work described there.\n"
+        f"{_HANDOFF_END}"
+    )
+
+    if claude_md.exists():
+        text = claude_md.read_text(encoding="utf-8")
+        # Replace existing handoff section if present
+        import re
+        pattern = re.compile(
+            rf"{re.escape(_HANDOFF_START)}.*?{re.escape(_HANDOFF_END)}",
+            re.DOTALL,
+        )
+        if pattern.search(text):
+            new_text = pattern.sub(handoff_section, text)
+        else:
+            # Append at the end
+            new_text = text.rstrip() + "\n\n" + handoff_section + "\n"
+    else:
+        new_text = handoff_section + "\n"
+
+    claude_md.write_text(new_text, encoding="utf-8")
 
 
 def _truncate(text: str, max_len: int) -> str:

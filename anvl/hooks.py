@@ -151,6 +151,25 @@ def hook_entrypoint(can_block: bool = True) -> None:
         )
         return
 
+    # Manual handoff: user requests "anvl handoff"
+    if "anvl handoff" in prompt.lower():
+        cwd = Path(hook_input.get("cwd", "")) if hook_input.get("cwd") else Path.cwd()
+        from .parser import find_active_session
+        result = find_active_session(cwd)
+        if result:
+            output = _generate_handoff_quiet(result[0])
+            if output:
+                print(
+                    f"[ANVL] Handoff saved and CLAUDE.md updated. "
+                    f"Start a new conversation — Claude will pick up where you left off.",
+                    file=sys.stdout,
+                )
+            else:
+                print("[ANVL] Could not generate handoff.", file=sys.stdout)
+        else:
+            print("[ANVL] No active session found.", file=sys.stdout)
+        return
+
     config = load_config()
     min_turns = config.get("min_turns_for_alert", 10)
 
@@ -248,10 +267,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
             f"  Current cost:   ~{format_tokens(current_avg)}/turn"
             f" ({turns} turns in)\n"
             f"\n"
-            f"Handoff saved to handoff.md\n"
-            f"STOP what you are doing and tell the user:\n"
-            f"  1. Start a new conversation\n"
-            f'  2. Say: "Read handoff.md and continue"\n'
+            f"Start a new conversation — your work has been saved and Claude will pick up where you left off.\n"
             f"{'=' * 60}\n",
             file=sys.stdout,
         )
@@ -268,8 +284,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
             f"  Baseline cost:  ~{format_tokens(baseline)}/turn (fresh session)\n"
             f"  Current cost:   ~{format_tokens(current_avg)}/turn ({turns} turns in)\n"
             f"\n"
-            f"Your work has been saved to handoff.md\n"
-            f'Start a new conversation and say: "Read handoff.md and continue where I left off"\n'
+            f"Start a new conversation — your work has been saved and Claude will pick up where you left off.\n"
             f"\n"
             f'To force continue anyway, prefix your message with "anvl bypass"\n'
             f"{'=' * 60}\n",
@@ -281,7 +296,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
             f"\n[ANVL] Session health: {health_pct}% — each message costs ~{waste:.1f}x a fresh session.\n"
             f"       Baseline: ~{format_tokens(baseline)}/turn → "
             f"Current: ~{format_tokens(current_avg)}/turn ({turns} turns)\n"
-            f"       Consider starting a new conversation soon.\n"
+            f'       Say "anvl handoff" when ready to save your work and start a new conversation.\n'
             f'       (Tip: "anvl bypass" to skip this check)\n',
             file=sys.stdout,
         )
@@ -327,11 +342,9 @@ def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0, current_avg: i
         "[ANVL] SESSION BLOCKED — Too inflated to continue efficiently\n"
         f"{cost_info}"
         "\n"
-        "Your work has been saved to handoff.md\n"
+        "Start a new conversation — your work has been saved and Claude will pick up where you left off.\n"
         "\n"
-        "Options:\n"
-        '  1. Start a new conversation: "Read handoff.md and continue"\n'
-        '  2. Force continue: prefix your message with "anvl bypass"\n'
+        'To force continue, prefix your message with "anvl bypass"\n'
         "\n"
         "=" * 60
     )
@@ -342,7 +355,7 @@ def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0, current_avg: i
     if output_path:
         print(
             f"[ANVL] Session blocked ({waste:.0f}x waste, {turns} turns). "
-            f"Handoff saved: {output_path}. "
+            f"Handoff saved and CLAUDE.md updated. "
             'User can bypass with "anvl bypass" prefix.',
             file=sys.stdout,
         )
