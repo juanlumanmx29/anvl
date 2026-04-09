@@ -114,7 +114,7 @@ class SessionSummary:
         w = self.waste_factor
         if w <= 1.0:
             return 100
-        threshold = 15.0
+        threshold = 10.0
         if w >= threshold:
             return 0
         return max(0, int(100 * (threshold - w) / (threshold - 1)))

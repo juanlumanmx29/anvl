@@ -97,7 +97,7 @@ def compute_waste_factor(
     return waste, effective_bl, current_avg
 
 
-def compute_health_pct(waste: float, turns: int = 0, threshold: float = 15.0) -> int:
+def compute_health_pct(waste: float, turns: int = 0, threshold: float = 10.0) -> int:
     """Session health as percentage (0-100).
 
     Maps waste linearly from 1x (100%) to threshold (0%).

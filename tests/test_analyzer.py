@@ -54,8 +54,8 @@ def test_health_pct_critical():
 
 
 def test_health_pct_mid():
-    # threshold=15: waste=8.0 → 100 * (15 - 8) / (15 - 1) = 50%
-    assert compute_health_pct(8.0, turns=20) == 50
+    # threshold=10: waste=5.5 → 100 * (10 - 5.5) / (10 - 1) = 50%
+    assert compute_health_pct(5.5, turns=20) == 50
 
 
 def test_health_young_session():
