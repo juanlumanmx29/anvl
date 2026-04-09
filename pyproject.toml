@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anvl-monitor"
-version = "0.1.0"
+version = "0.2.0"
 description = "Session monitor and handoff tool for Claude Code"
 readme = "README.md"
 license = "MIT"

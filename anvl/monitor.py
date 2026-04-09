@@ -21,10 +21,41 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from . import __version__
 from .analyzer import format_tokens
 from .branding import styled_banner, styled_subtitle, styled_tagline
 from .calibration import DEFAULT_BASELINE, get_calibration_info
 from .sessions import collect_all_sessions, compute_savings
+
+# Update check cache (check at most once per hour)
+_update_cache: dict = {"latest": None, "checked_at": 0.0}
+_UPDATE_CHECK_INTERVAL = 3600  # seconds
+
+
+def _check_for_update() -> str | None:
+    """Check PyPI for a newer version. Returns latest version or None.
+
+    Cached for 1 hour.  Never blocks the monitor — fails silently.
+    """
+    now = time.monotonic()
+    if now - _update_cache["checked_at"] < _UPDATE_CHECK_INTERVAL:
+        return _update_cache["latest"]
+
+    _update_cache["checked_at"] = now
+    try:
+        import json as _json
+        from urllib.request import urlopen
+
+        with urlopen("https://pypi.org/pypi/anvl/json", timeout=3) as resp:
+            data = _json.loads(resp.read())
+        latest = data.get("info", {}).get("version", "")
+        if latest and latest != __version__:
+            _update_cache["latest"] = latest
+        else:
+            _update_cache["latest"] = None
+    except Exception:
+        _update_cache["latest"] = None
+    return _update_cache["latest"]
 
 
 def _health_bar(pct: int, color: str, bar_len: int = 20) -> str:
@@ -160,6 +191,17 @@ def build_monitor_display() -> Group:
             "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier │ cost = weighted tokens[/dim]"
         )
     )
+
+    # Update notice
+    latest = _check_for_update()
+    if latest:
+        parts.append(
+            Text.from_markup(
+                f"  [bold yellow]Update available:[/bold yellow]"
+                f" {__version__} → {latest}"
+                f"  [dim]pip install --upgrade anvl[/dim]"
+            )
+        )
 
     return Group(*parts)
 
