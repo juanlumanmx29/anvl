@@ -297,6 +297,7 @@ def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0, current_avg: i
         "=" * 60
     )
     print(block_msg, file=sys.stderr)
+    sys.stderr.flush()
 
     # stdout: context for Claude (if bypass is used later)
     if output_path:
@@ -306,3 +307,6 @@ def _auto_handoff(jsonl_path: Path, turns: int, waste: float = 0, current_avg: i
             'User can bypass with "anvl bypass" prefix.',
             file=sys.stdout,
         )
+    # Repeat on stdout as fallback — stderr may not display on all platforms
+    print(block_msg, file=sys.stdout)
+    sys.stdout.flush()
