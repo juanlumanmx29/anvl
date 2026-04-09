@@ -84,52 +84,55 @@ When it's critical, ANVL blocks the session entirely:
 
 ANVL measures session health as a **percentage from 0% to 100%**, based on a single metric: **waste factor**.
 
-### Waste factor
+### Waste factor (dual-signal)
+
+ANVL uses a **growth-aware** waste calculation that combines two signals:
 
 ```
-waste = peak_avg_tokens_per_turn / calibrated_baseline
+Signal A (relative): actual_growth / expected_growth_p75
+Signal B (absolute): current_cost / fresh_session_cost
+waste = max(signal_a, signal_b)
 ```
 
-- **Calibrated baseline** = the global median of "typical turn cost" across all your sessions. Each session contributes its median tokens/turn from the first 5 turns. With 50+ sessions of data, this is a stable reference for what a normal Claude Code turn costs in your workflow.
+- **Signal A** compares your session's growth rate against the historical p75 growth curve. If your session is growing faster than 75% of past sessions at the same turn count, waste goes up.
 
-- **Peak avg** = the worst 5-turn window average across the entire session. Health never improves — once a session inflates, it stays marked as inflated.
+- **Signal B** compares the current cost per turn against what a fresh session costs. This catches sessions that started expensive and stayed expensive.
+
+- **Calibrated baseline** = the global median of "typical turn cost" across all your sessions. Each session contributes its median tokens/turn from the first 5 turns. With enough sessions, this is a stable reference for what a normal Claude Code turn costs in your workflow.
 
 A fresh session has waste = 1.0x. As the conversation grows and Claude resends more history, tokens/turn increases, waste goes up.
 
 ### Health percentage
 
-Health maps waste linearly from 100% (fresh) to 0% (critical), weighted by **confidence**:
+Health maps waste linearly from 100% (fresh, 1x) to 0% (critical, 15x):
 
 ```
-raw_health = 100% × (10 - waste) / 9
-confidence = min(1.0, turns / 20)
-health = raw_health × confidence + 100% × (1 - confidence)
+health = 100% × (15 - waste) / 14
 ```
 
-Young sessions are blended toward 100% because waste isn't reliable with few data points. As turns increase, confidence grows and health reflects real waste:
+Sessions with fewer than 5 turns always show 100% — waste isn't reliable with few data points.
 
-| Waste | 5 turns | 10 turns | 20+ turns |
-|:-----:|:-------:|:--------:|:---------:|
-| 1.0x | 100% | 100% | 100% |
-| 2.0x | 97% | 94% | 88% |
-| 5.0x | 88% | 77% | 55% |
-| 8.0x | 80% | 61% | 22% |
-| 10.0x | 75% | 50% | 0% |
+| Waste | Health |
+|:-----:|:------:|
+| 1.0x | 100% |
+| 3.0x | 85% |
+| 5.0x | 71% |
+| 8.0x | 50% |
+| 12.0x | 21% |
+| 15.0x | 0% |
 
-### Why tokens/turn matters
+### Weighted token cost
 
-Claude Code pricing uses different rates for different token types:
+The monitor shows a **weighted cost** per session that approximates real quota impact using API pricing ratios:
 
-| Token type | Relative cost | What it is |
-|:-----------|:------------:|:-----------|
+| Token type | Weight | What it is |
+|:-----------|:------:|:-----------|
 | Input tokens | 1.0x | New content in the prompt |
 | Cache read | 0.1x | Previously cached context (90% cheaper) |
 | Cache creation | 1.25x | Writing new content to cache |
 | Output tokens | 5.0x | Claude's response |
 
-In early turns, most input is cache reads (cheap). As the conversation grows, cache creation increases and more raw input is sent — the cost per turn grows even though the token count might seem similar.
-
-ANVL measures **total tokens per turn** (all categories combined) because this reflects the actual volume of data being processed, regardless of caching.
+This gives you a single number that reflects actual cost, not just raw token volume. A session burning 500K tokens mostly on cache reads costs far less than one burning 500K on fresh input + output.
 
 ---
 
@@ -236,10 +239,11 @@ anvl monitor
 ```
 
 Shows a live dashboard with:
-- Health bar with percentage and waste factor
+- Health bar with percentage and waste factor per session
+- Weighted token cost (approximates real quota impact using API pricing ratios)
 - Global calibrated baseline (median turn cost across all sessions)
-- Table of all active sessions with input/output totals
 - Tokens wasted by inflation and tokens saved by rotation
+- Update notification when a new version is available on PyPI
 
 Auto-refreshes every 2 seconds. Press `Ctrl+C` to exit.
 
@@ -263,21 +267,21 @@ File: `~/.anvl/config.json`
 |-------|:-------:|-------------|
 | `waste_threshold` | 2 | Waste factor to start showing warnings |
 | `handoff_waste_threshold` | 10 | Waste factor to block session + auto-handoff |
-| `min_turns_for_alert` | 5 | Minimum turns before any alerts fire |
+| `min_turns_for_alert` | 10 | Minimum turns before any alerts fire |
 | `window_hours` | 5 | Rolling window for quota tracking |
 
 ---
 
 ## Alert levels
 
-| Health | Waste | Action |
-|:------:|:-----:|:-------|
-| 60-100% | 1-5x | No alerts — session is healthy |
-| 30-60% | 5-8x | Warning: "Consider starting a new conversation" |
-| 1-30% | 8-10x | Handoff auto-generated, strong warning |
-| 0% | ≥10x | **Session blocked** (exit code 2), handoff saved |
+| Health | Action |
+|:------:|:-------|
+| 50-100% | No alerts — session is healthy |
+| 20-49% | Warning: "Consider starting a new conversation soon" |
+| 10-19% | **Inflated** — handoff auto-generated, strong warning |
+| < 10% | **Critical** — handoff saved, session flagged for rotation |
 
-Blocking requires at least 20 turns — ANVL won't block a short session even if waste is high, because short sessions are cheap regardless.
+Alerts require at least 10 turns (`min_turns_for_alert` in config) — ANVL won't warn on short sessions even if waste is high, because short sessions are cheap regardless.
 
 **Bypass:** If ANVL blocks your session and you need to send one more message, type `anvl bypass` before your message. ANVL will skip all checks for that message.
 
