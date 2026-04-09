@@ -112,16 +112,16 @@ def build_monitor_display() -> Group:
                 )
 
                 # Inline detail for unhealthy sessions (only with enough data)
-                if pct < 60 and s.turns >= 5:
+                if pct < 50 and s.turns >= 10:
                     bl = s.effective_baseline
                     cur = _current_avg(s)
                     cost_str = f"~{format_tokens(bl)} → ~{format_tokens(cur)}/turn"
                     if pct < 10:
-                        session_lines.append(f"    [red]⚠ BLOCKED — {waste:.0f}x cost ({cost_str})[/red]")
-                    elif pct < 30:
+                        session_lines.append(f"    [red]⚠ CRITICAL — {waste:.0f}x cost ({cost_str})[/red]")
+                    elif pct < 20:
                         session_lines.append(f"    [red]⚠ INFLATED — {waste:.0f}x cost ({cost_str})[/red]")
                     else:
-                        session_lines.append(f"    [yellow]● warming — {waste:.1f}x cost ({cost_str})[/yellow]")
+                        session_lines.append(f"    [yellow]● elevated — {waste:.1f}x cost ({cost_str})[/yellow]")
 
     # Compose panel content
     content_parts = [

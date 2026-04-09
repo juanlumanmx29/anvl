@@ -152,7 +152,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
         return
 
     config = load_config()
-    min_turns = config.get("min_turns_for_alert", 5)
+    min_turns = config.get("min_turns_for_alert", 10)
 
     cwd = Path(hook_input.get("cwd", "")) if hook_input.get("cwd") else Path.cwd()
     from .config import find_project_dir
@@ -217,7 +217,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
     waste = summary.waste_factor
     health_pct = summary.health_pct
 
-    if health_pct >= 60:
+    if health_pct >= 50:
         return
 
     # Format cost explanation for all alert levels
@@ -252,7 +252,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
         )
         sys.stdout.flush()
         return
-    elif health_pct < 30:
+    elif health_pct < 20:
         # Red zone: strong warning, generate handoff
         _generate_handoff_quiet(jsonl_path)
         print(

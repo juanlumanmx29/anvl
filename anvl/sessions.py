@@ -103,13 +103,8 @@ class SessionSummary:
     def health_pct(self) -> int:
         """Session health as percentage (0-100).
 
-        Linear from 1x (100%) to 10x (0%).
-        Young sessions get a health floor — waste needs more data to be
-        reliable, so we don't alarm the user prematurely:
-          < 2 turns: always 100%
-          < 10 turns: floor at 40% (yellow at worst, never red)
-          < 20 turns: floor at 15% (can go red but not 0%)
-          >= 20 turns: no floor
+        Linear from 1x (100%) to 15x (0%).  Gradual scale so sessions
+        don't hit red too quickly.
         """
         n = len(self.per_turn_tokens)
         if n < 2:
@@ -120,7 +115,7 @@ class SessionSummary:
         w = self.waste_factor
         if w <= 1.0:
             return 100
-        threshold = 10.0
+        threshold = 15.0
         if w >= threshold:
             return 0
         return max(0, int(100 * (threshold - w) / (threshold - 1)))
@@ -129,9 +124,9 @@ class SessionSummary:
     def efficiency(self) -> str:
         """Session health color: green/yellow/red derived from health %."""
         pct = self.health_pct
-        if pct >= 60:
+        if pct >= 50:
             return "green"
-        elif pct >= 30:
+        elif pct >= 20:
             return "yellow"
         return "red"
 

@@ -100,7 +100,7 @@ def compute_waste_factor(
     return max(1.0, waste), baseline_min, current_avg
 
 
-def compute_health_pct(waste: float, turns: int = 0, threshold: float = 10.0) -> int:
+def compute_health_pct(waste: float, turns: int = 0, threshold: float = 15.0) -> int:
     """Session health as percentage (0-100).
 
     Maps waste linearly from 1x (100%) to threshold (0%).
@@ -118,9 +118,9 @@ def compute_health_pct(waste: float, turns: int = 0, threshold: float = 10.0) ->
 
 def compute_semaphore(health_pct: int) -> str:
     """Green/yellow/red derived from health percentage."""
-    if health_pct >= 60:
+    if health_pct >= 50:
         return "green"
-    elif health_pct >= 30:
+    elif health_pct >= 20:
         return "yellow"
     return "red"
 
