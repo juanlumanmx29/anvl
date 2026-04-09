@@ -97,7 +97,10 @@ def build_monitor_display() -> Group:
                 session_lines.append(f"  {dot} {title:<40s}  [dim]waiting...[/dim]")
             elif s.turns < 5:
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
-                session_lines.append(f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  [dim]warming up...[/dim]  [cyan]{cost_str}[/cyan]")
+                session_lines.append(
+                    f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}"
+                    f"  [dim]warming up...[/dim]  [cyan]{cost_str}[/cyan]"
+                )
             else:
                 bar = _health_bar(pct, color, bar_len=20)
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
@@ -154,7 +157,7 @@ def build_monitor_display() -> Group:
 
     parts.append(
         Text.from_markup(
-            "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier vs fresh session │ cost = weighted tokens used[/dim]"
+            "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier │ cost = weighted tokens[/dim]"
         )
     )
 
