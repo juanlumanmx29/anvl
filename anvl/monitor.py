@@ -68,7 +68,7 @@ def build_monitor_display() -> Group:
     else:
         cal_str = f"[dim]{format_tokens(DEFAULT_BASELINE)}/turn (default)[/dim]"
 
-    header = f"  Baseline: {cal_str}  │  Active: [bold]{len(active)}[/bold]"
+    header = f"  Ref. cost/turn: {cal_str}  │  Active: [bold]{len(active)}[/bold]"
 
     # Build session lines — one per session, health bar prominent
     session_lines: list[str] = []
@@ -91,12 +91,13 @@ def build_monitor_display() -> Group:
             elapsed = _elapsed(s.started_at)
             waste = s.waste_factor
             dot = f"[{color}]●[/{color}]"
+            cost_str = format_tokens(int(s.weighted_cost))
 
             if s.turns == 0:
                 session_lines.append(f"  {dot} {title:<40s}  [dim]waiting...[/dim]")
             elif s.turns < 5:
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
-                session_lines.append(f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  [dim]warming up...[/dim]")
+                session_lines.append(f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  [dim]warming up...[/dim]  [cyan]{cost_str}[/cyan]")
             else:
                 bar = _health_bar(pct, color, bar_len=20)
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
@@ -104,7 +105,7 @@ def build_monitor_display() -> Group:
 
                 session_lines.append(
                     f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  "
-                    f"[{color}]{pct:>3}%[/{color}] {bar} {waste_str}"
+                    f"[{color}]{pct:>3}%[/{color}] {bar} {waste_str}  [cyan]{cost_str}[/cyan]"
                 )
 
                 # Inline detail for unhealthy sessions (only with enough data)
@@ -153,7 +154,7 @@ def build_monitor_display() -> Group:
 
     parts.append(
         Text.from_markup(
-            "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier vs fresh session[/dim]"
+            "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier vs fresh session │ cost = weighted tokens used[/dim]"
         )
     )
 
