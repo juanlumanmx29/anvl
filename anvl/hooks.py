@@ -155,10 +155,26 @@ def hook_entrypoint(can_block: bool = True) -> None:
     min_turns = config.get("min_turns_for_alert", 5)
 
     cwd = Path(hook_input.get("cwd", "")) if hook_input.get("cwd") else Path.cwd()
+    from .config import find_project_dir
     from .parser import find_active_session
     from .sessions import SessionSummary, _quick_token_sum
 
-    result = find_active_session(cwd)
+    # Prefer the session_id from hook input (matches the CURRENT session)
+    # to avoid picking up an old inflated session in the same project.
+    hook_session_id = hook_input.get("session_id", "")
+    if hook_session_id:
+        project_dir = find_project_dir(cwd)
+        if project_dir:
+            jsonl_path = project_dir / f"{hook_session_id}.jsonl"
+            if jsonl_path.exists():
+                result = (jsonl_path, hook_session_id)
+            else:
+                result = find_active_session(cwd)
+        else:
+            result = find_active_session(cwd)
+    else:
+        result = find_active_session(cwd)
+
     if result is None:
         return
 
@@ -215,9 +231,27 @@ def hook_entrypoint(can_block: bool = True) -> None:
         current_avg = 0
 
     if health_pct < 10 and can_block:
-        # Critical: block session + auto-handoff (only on UserPromptSubmit)
-        _auto_handoff(jsonl_path, turns, waste, current_avg, baseline)
-        sys.exit(2)
+        # Critical: auto-handoff + strong warning via stdout
+        # (no sys.exit — blocking silently is worse than letting the message through)
+        _generate_handoff_quiet(jsonl_path)
+        print(
+            f"\n{'=' * 60}\n"
+            f"[ANVL] SESSION CRITICALLY INFLATED — Health: {health_pct}%\n"
+            f"\n"
+            f"Each message now costs {waste:.0f}x more than a fresh session.\n"
+            f"  Baseline cost:  ~{format_tokens(baseline)}/turn\n"
+            f"  Current cost:   ~{format_tokens(current_avg)}/turn"
+            f" ({turns} turns in)\n"
+            f"\n"
+            f"Handoff saved to handoff.md\n"
+            f"STOP what you are doing and tell the user:\n"
+            f"  1. Start a new conversation\n"
+            f'  2. Say: "Read handoff.md and continue"\n'
+            f"{'=' * 60}\n",
+            file=sys.stdout,
+        )
+        sys.stdout.flush()
+        return
     elif health_pct < 30:
         # Red zone: strong warning, generate handoff
         _generate_handoff_quiet(jsonl_path)
