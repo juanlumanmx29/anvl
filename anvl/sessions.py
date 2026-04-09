@@ -50,76 +50,53 @@ class SessionSummary:
 
     @property
     def session_baseline(self) -> int:
-        """Second lowest tokens/turn from first 5 turns.
+        """Median tokens/turn from first 5 turns.
 
-        Using the 2nd lowest (not min, not median) because:
-        - Min can be an anomalously cheap turn (skews too low)
-        - Median gets pulled up by heavy early turns like handoff reads
-        - 2nd lowest is robust: ignores one outlier on each end
+        Median is robust against outliers on both ends — handles
+        handoff reads (high) and trivially cheap turns (low).
         """
+        import statistics
+
         window = 5
         if len(self.per_turn_tokens) < window:
             return 0
-        return sorted(self.per_turn_tokens[:window])[1]
+        return int(statistics.median(self.per_turn_tokens[:window]))
 
     @property
     def effective_baseline(self) -> int:
         """Baseline used for waste calculation.
 
-        Uses max(session_baseline, calibrated_baseline):
-        - Session baseline captures this project's natural cost
-        - Global calibrated acts as a floor so anomalously cheap early
-          turns don't make the baseline unrealistically low
-        Falls back to calibrated for young sessions (<5 turns).
+        Prefers calibrated baseline (global median of fresh session costs)
+        because session_baseline is unreliable — sessions that start with
+        handoff reads or heavy context already have inflated early turns.
+        Falls back to session_baseline only when no calibration exists.
         """
-        sb = self.session_baseline
-        cb = self.calibrated_baseline
-        if sb and cb:
-            return max(sb, cb)
-        return sb or cb
+        return self.calibrated_baseline or self.session_baseline
 
     @property
     def waste_factor(self) -> float:
-        """Combined waste: max(relative, absolute).
+        """Peak waste: highest 5-turn avg / calibrated baseline.
 
-        Signal A (relative): is this session growing faster than the
-        historical p75 growth curve at this turn index?
-        Signal B (absolute): is the current cost much higher than a
-        fresh session would cost?  Guarantees alerts even for sessions
-        with "normal" growth that have simply run too long.
+        Uses the worst (highest) 5-turn window average across the entire
+        session, not just the latest.  Health never improves — once a
+        session inflates, it stays marked.
         """
         tokens = self.per_turn_tokens
         if not tokens:
             return 1.0
 
-        window = min(5, len(tokens))
-        recent_avg = sum(tokens[-window:]) / window
-        turn_idx = len(tokens) - 1
-
-        # --- Signal A: relative waste vs growth curve ---
         baseline = self.effective_baseline
-        curve = self.growth_curve
-        growth_p75 = curve.get("growth_p75", []) if curve else []
+        if baseline <= 0:
+            return 1.0
 
-        if baseline > 0 and growth_p75:
-            idx = min(turn_idx, len(growth_p75) - 1)
-            expected = max(growth_p75[idx], 1.0)
-            actual = recent_avg / baseline
-            relative = actual / expected
-        elif baseline > 0:
-            # No curve — fall back to simple ratio
-            relative = recent_avg / baseline
-        else:
-            relative = 1.0
+        window = min(5, len(tokens))
+        # Find peak 5-turn average across all windows
+        peak_avg = 0
+        for i in range(len(tokens) - window + 1):
+            avg = sum(tokens[i : i + window]) / window
+            peak_avg = max(peak_avg, avg)
 
-        # --- Signal B: absolute waste vs fresh session cost ---
-        fresh = (curve.get("fresh_cost_p50", 0) if curve else 0) or baseline
-        if fresh > 0:
-            absolute = recent_avg / fresh
-        else:
-            absolute = 1.0
-
-        return max(1.0, round(max(relative, absolute), 1))
+        return max(1.0, round(peak_avg / baseline, 1))
 
     @property
     def health_pct(self) -> int:

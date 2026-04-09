@@ -59,10 +59,9 @@ def compute_waste_factor(
     calibrated_baseline: int | None = None,
     growth_curve: dict | None = None,
 ) -> tuple[float, int, int]:
-    """Growth-aware waste: max(relative, absolute).
+    """Peak waste: highest 5-turn avg / calibrated baseline.
 
-    Signal A (relative): actual growth vs p75 historical growth curve.
-    Signal B (absolute): current cost vs fresh session cost.
+    Health never improves — uses the worst window across the session.
 
     Returns (waste_factor, baseline_per_turn, current_per_turn).
     With < window turns, waste is always 1.0.
@@ -74,31 +73,27 @@ def compute_waste_factor(
             return 1.0, avg, avg
         return 1.0, 0, 0
 
-    session_baseline = min(t.total_tokens for t in meaningful[:window])
-    baseline = calibrated_baseline if calibrated_baseline else session_baseline
-    effective_bl = max(session_baseline, baseline) if session_baseline and baseline else (session_baseline or baseline)
+    # Median of first N turns — robust against outliers (handoff reads, cheap turns)
+    import statistics
+
+    session_baseline = int(statistics.median(t.total_tokens for t in meaningful[:window]))
+    # Prefer calibrated baseline — session baseline is unreliable when
+    # sessions start with handoff reads or heavy context
+    effective_bl = calibrated_baseline or session_baseline
 
     current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
-    turn_idx = len(meaningful) - 1
 
     if effective_bl == 0:
         return 1.0, 0, current_avg
 
-    # Signal A: relative waste vs growth curve
-    growth_p75 = (growth_curve or {}).get("growth_p75", [])
-    if growth_p75:
-        idx = min(turn_idx, len(growth_p75) - 1)
-        expected = max(growth_p75[idx], 1.0)
-        actual_growth = current_avg / effective_bl
-        relative = actual_growth / expected
-    else:
-        relative = current_avg / effective_bl
+    # Peak 5-turn average across all windows — health never improves
+    totals = [t.total_tokens for t in meaningful]
+    peak_avg = 0
+    for i in range(len(totals) - window + 1):
+        avg = sum(totals[i : i + window]) / window
+        peak_avg = max(peak_avg, avg)
 
-    # Signal B: absolute waste vs fresh session cost
-    fresh = (growth_curve or {}).get("fresh_cost_p50", 0) or effective_bl
-    absolute = current_avg / fresh if fresh > 0 else 1.0
-
-    waste = max(1.0, round(max(relative, absolute), 1))
+    waste = max(1.0, round(peak_avg / effective_bl, 1))
     return waste, effective_bl, current_avg
 
 

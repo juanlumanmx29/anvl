@@ -67,8 +67,14 @@ def cmd_status(args: argparse.Namespace) -> None:
             sys.exit(1)
         jsonl_path, _ = result
 
+    from .calibration import get_calibrated_baseline, get_growth_curve
+
     session = parse_session_file(jsonl_path)
-    metrics = analyze_session(session)
+    metrics = analyze_session(
+        session,
+        calibrated_baseline=get_calibrated_baseline(),
+        growth_curve=get_growth_curve(),
+    )
 
     if args.json:
         import json
@@ -157,9 +163,15 @@ def cmd_handoff(args: argparse.Namespace) -> None:
         console.print("[red]No session found.[/red]")
         sys.exit(1)
 
+    from .calibration import get_calibrated_baseline, get_growth_curve
+
     jsonl_path, _ = result
     session = parse_session_file(jsonl_path)
-    metrics = analyze_session(session)
+    metrics = analyze_session(
+        session,
+        calibrated_baseline=get_calibrated_baseline(),
+        growth_curve=get_growth_curve(),
+    )
 
     output_path = Path(args.output) if args.output else Path(session.cwd or ".") / "handoff.md"
     generate_handoff(session, metrics, output_path)
