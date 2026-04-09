@@ -46,7 +46,7 @@ def _check_for_update() -> str | None:
         import json as _json
         from urllib.request import urlopen
 
-        with urlopen("https://pypi.org/pypi/anvl/json", timeout=3) as resp:
+        with urlopen("https://pypi.org/pypi/anvl-monitor/json", timeout=3) as resp:
             data = _json.loads(resp.read())
         latest = data.get("info", {}).get("version", "")
         if latest and latest != __version__:
