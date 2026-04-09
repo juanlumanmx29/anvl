@@ -50,7 +50,12 @@ def _check_for_update() -> str | None:
             data = _json.loads(resp.read())
         latest = data.get("info", {}).get("version", "")
         if latest and latest != __version__:
-            _update_cache["latest"] = latest
+            # Only notify if PyPI version is actually newer
+            _to_tuple = lambda v: tuple(int(x) for x in v.split("."))
+            if _to_tuple(latest) > _to_tuple(__version__):
+                _update_cache["latest"] = latest
+            else:
+                _update_cache["latest"] = None
         else:
             _update_cache["latest"] = None
     except Exception:
