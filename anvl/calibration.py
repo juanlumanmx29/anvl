@@ -21,6 +21,7 @@ from pathlib import Path
 from .config import ANVL_CONFIG_DIR
 
 CALIBRATION_FILE = ANVL_CONFIG_DIR / "calibration.json"
+GROWTH_CURVE_FILE = ANVL_CONFIG_DIR / "growth_curve.json"
 
 # Minimum sessions needed before calibration kicks in
 MIN_SESSIONS_FOR_CALIBRATION = 3
@@ -28,9 +29,32 @@ MIN_SESSIONS_FOR_CALIBRATION = 3
 # Maximum baselines to store (rolling window)
 MAX_BASELINES = 200
 
+# Minimum sessions to generate a growth curve
+MIN_SESSIONS_FOR_CURVE = 10
+
 # Default baseline for new users (derived from real-world median across 56 sessions).
 # Used when no calibration data exists yet so health works from turn 1.
 DEFAULT_BASELINE = 80_000
+
+# Default growth curve (p75 growth multipliers by turn index, smoothed).
+# Derived from 59 real sessions.  Used before enough local data exists.
+# fmt: off
+DEFAULT_GROWTH_CURVE: dict = {
+    "version": 1,
+    "session_count": 0,
+    "fresh_cost_p50": 207_000,
+    "growth_p75": [
+        2.5, 7.9, 3.0, 8.6, 6.8,       # turns 0-4
+        8.2, 9.3, 11.2, 11.7, 12.8,     # turns 5-9
+        11.8, 12.7, 10.8, 13.5, 13.5,   # turns 10-14
+        13.5, 13.5, 13.5, 13.5, 13.5,   # turns 15-19
+        13.5, 13.5, 13.5, 13.5, 17.4,   # turns 20-24
+        17.4, 17.4, 17.4, 33.5, 33.5,   # turns 25-29
+        33.5, 33.5, 33.5, 47.6, 47.6,   # turns 30-34
+        47.6, 47.6, 47.6, 47.6, 47.6,   # turns 35-39
+    ],
+}
+# fmt: on
 
 
 def _load_calibration() -> dict:
@@ -116,6 +140,9 @@ def record_baseline(session_id: str, baseline: int) -> None:
         data["calibrated_baseline"] = None
 
     _save_calibration(data)
+
+    # Periodically rebuild the growth curve
+    maybe_rebuild_growth_curve()
 
 
 def get_calibrated_baseline() -> int:
@@ -221,3 +248,120 @@ def import_calibration(path: Path) -> int:
 
     _save_calibration(data)
     return added
+
+
+# ---------------------------------------------------------------------------
+# Growth curve: expected cost growth by turn index
+# ---------------------------------------------------------------------------
+
+# Module-level cache for the growth curve (mtime-based)
+_curve_cache: dict = {"mtime": 0.0, "data": None}
+
+
+def build_growth_curve(sessions: list) -> dict:
+    """Build a growth curve from historical session data.
+
+    Each session contributes per-turn growth multipliers (cost / session_baseline).
+    We compute the 75th percentile at each turn index, then smooth with a
+    cumulative max so the curve never decreases.
+
+    *sessions* is a list of objects with `per_turn_tokens: list[int]` and
+    `session_baseline: int` attributes (e.g., SessionSummary).
+    """
+    qualified = [s for s in sessions if len(s.per_turn_tokens) >= 5 and s.session_baseline > 0]
+
+    if len(qualified) < MIN_SESSIONS_FOR_CURVE:
+        return dict(DEFAULT_GROWTH_CURVE)
+
+    # Collect growth multipliers per turn index
+    max_turns = max(len(s.per_turn_tokens) for s in qualified)
+    growth_by_turn: list[list[float]] = [[] for _ in range(max_turns)]
+
+    for s in qualified:
+        bl = s.session_baseline
+        for i, cost in enumerate(s.per_turn_tokens):
+            growth_by_turn[i].append(cost / bl)
+
+    # Compute p75, only for turns with enough data points
+    raw_p75: list[float] = []
+    for turn_data in growth_by_turn:
+        if len(turn_data) >= 5:
+            raw_p75.append(statistics.quantiles(turn_data, n=4)[2])
+        else:
+            break  # stop when data gets too sparse
+
+    # Smooth: cumulative max so curve never decreases
+    smoothed: list[float] = []
+    running_max = 1.0
+    for v in raw_p75:
+        running_max = max(running_max, v)
+        smoothed.append(round(running_max, 1))
+
+    # Fresh cost: median of avg(turns 0-2) across all sessions
+    fresh_costs = []
+    for s in qualified:
+        n = min(3, len(s.per_turn_tokens))
+        fresh_costs.append(int(sum(s.per_turn_tokens[:n]) / n))
+    fresh_p50 = int(statistics.median(fresh_costs))
+
+    return {
+        "version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "session_count": len(qualified),
+        "fresh_cost_p50": fresh_p50,
+        "growth_p75": smoothed,
+    }
+
+
+def save_growth_curve(curve: dict) -> None:
+    """Persist growth curve to disk."""
+    ANVL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(GROWTH_CURVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(curve, f, indent=2)
+        f.write("\n")
+
+
+def load_growth_curve() -> dict:
+    """Load growth curve from disk with mtime caching."""
+    if not GROWTH_CURVE_FILE.exists():
+        return {}
+    try:
+        mtime = GROWTH_CURVE_FILE.stat().st_mtime
+        if _curve_cache["data"] is not None and mtime == _curve_cache["mtime"]:
+            return _curve_cache["data"]
+        with open(GROWTH_CURVE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _curve_cache["mtime"] = mtime
+        _curve_cache["data"] = data
+        return data
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def get_growth_curve() -> dict:
+    """Get the growth curve. Falls back to DEFAULT_GROWTH_CURVE."""
+    curve = load_growth_curve()
+    return curve if curve else dict(DEFAULT_GROWTH_CURVE)
+
+
+def maybe_rebuild_growth_curve() -> None:
+    """Rebuild the growth curve if enough new sessions have been recorded.
+
+    Triggers when session_count is a multiple of 5.  Avoids circular
+    imports by importing collect_all_sessions lazily.
+    """
+    data = _load_calibration()
+    count = data.get("session_count", 0)
+    if count < MIN_SESSIONS_FOR_CURVE or count % 5 != 0:
+        return
+
+    existing = load_growth_curve()
+    if existing.get("session_count", 0) >= count:
+        return  # already up to date
+
+    from .sessions import collect_all_sessions
+
+    sessions = collect_all_sessions()
+    curve = build_growth_curve(sessions)
+    if curve.get("growth_p75"):
+        save_growth_curve(curve)

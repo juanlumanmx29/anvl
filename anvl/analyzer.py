@@ -57,15 +57,12 @@ def compute_waste_factor(
     per_turn: list[TurnMetrics],
     window: int = BASELINE_WINDOW,
     calibrated_baseline: int | None = None,
+    growth_curve: dict | None = None,
 ) -> tuple[float, int, int]:
-    """Compute waste as current_avg / baseline.
+    """Growth-aware waste: max(relative, absolute).
 
-    Baseline selection (auto-calibration):
-      1. If calibrated_baseline is provided (from historical sessions), use it.
-      2. Otherwise, fall back to min(first `window` turns) of this session.
-
-    Calibrated baselines are the median of baselines across all sessions
-    in the same project, making waste measurements stable and comparable.
+    Signal A (relative): actual growth vs p75 historical growth curve.
+    Signal B (absolute): current cost vs fresh session cost.
 
     Returns (waste_factor, baseline_per_turn, current_per_turn).
     With < window turns, waste is always 1.0.
@@ -78,26 +75,31 @@ def compute_waste_factor(
         return 1.0, 0, 0
 
     session_baseline = min(t.total_tokens for t in meaningful[:window])
-    baseline_min = calibrated_baseline if calibrated_baseline else session_baseline
-
-    if baseline_min == 0:
-        current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
-        return 1.0, 0, current_avg
-
-    # Peak waste: check every possible window position, keep the worst.
-    # Health should never improve — once inflated, it stays inflated.
-    peak_waste = 1.0
-    for i in range(len(meaningful) - window + 1):
-        w = meaningful[i : i + window]
-        avg = sum(t.total_tokens for t in w) // len(w)
-        w_factor = avg / baseline_min
-        if w_factor > peak_waste:
-            peak_waste = w_factor
+    baseline = calibrated_baseline if calibrated_baseline else session_baseline
+    effective_bl = max(session_baseline, baseline) if session_baseline and baseline else (session_baseline or baseline)
 
     current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
-    # Use peak waste but show current avg for display
-    waste = round(peak_waste, 1)
-    return max(1.0, waste), baseline_min, current_avg
+    turn_idx = len(meaningful) - 1
+
+    if effective_bl == 0:
+        return 1.0, 0, current_avg
+
+    # Signal A: relative waste vs growth curve
+    growth_p75 = (growth_curve or {}).get("growth_p75", [])
+    if growth_p75:
+        idx = min(turn_idx, len(growth_p75) - 1)
+        expected = max(growth_p75[idx], 1.0)
+        actual_growth = current_avg / effective_bl
+        relative = actual_growth / expected
+    else:
+        relative = current_avg / effective_bl
+
+    # Signal B: absolute waste vs fresh session cost
+    fresh = (growth_curve or {}).get("fresh_cost_p50", 0) or effective_bl
+    absolute = current_avg / fresh if fresh > 0 else 1.0
+
+    waste = max(1.0, round(max(relative, absolute), 1))
+    return waste, effective_bl, current_avg
 
 
 def compute_health_pct(waste: float, turns: int = 0, threshold: float = 15.0) -> int:
@@ -148,7 +150,11 @@ def compute_trend(per_turn: list[TurnMetrics], window: int = 5) -> str:
     return "stable"
 
 
-def analyze_session(session: SessionData, calibrated_baseline: int | None = None) -> SessionMetrics:
+def analyze_session(
+    session: SessionData,
+    calibrated_baseline: int | None = None,
+    growth_curve: dict | None = None,
+) -> SessionMetrics:
     """Compute full metrics for a session."""
     metrics = SessionMetrics(
         session_id=session.session_id,
@@ -189,7 +195,9 @@ def analyze_session(session: SessionData, calibrated_baseline: int | None = None
         metrics.total_cache_creation += u.cache_creation_input_tokens
 
     # Waste factor: current tokens/turn vs baseline tokens/turn
-    waste, baseline, current = compute_waste_factor(metrics.per_turn, calibrated_baseline=calibrated_baseline)
+    waste, baseline, current = compute_waste_factor(
+        metrics.per_turn, calibrated_baseline=calibrated_baseline, growth_curve=growth_curve
+    )
     metrics.waste_factor = waste
     metrics.baseline_per_turn = baseline
     metrics.current_per_turn = current

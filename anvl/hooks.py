@@ -198,6 +198,10 @@ def hook_entrypoint(can_block: bool = True) -> None:
             record_baseline(session_id, session_bl)
     calibrated = get_calibrated_baseline()
 
+    from .calibration import get_growth_curve
+
+    curve = get_growth_curve()
+
     # Build a SessionSummary to reuse the exact same waste/health logic
     from datetime import datetime, timezone
 
@@ -212,6 +216,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
         turns=turns,
         per_turn_tokens=per_turn,
         calibrated_baseline=calibrated,
+        growth_curve=curve,
     )
 
     waste = summary.waste_factor

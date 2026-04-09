@@ -49,12 +49,13 @@ def test_health_pct_fresh():
 
 
 def test_health_pct_critical():
-    assert compute_health_pct(10.0, turns=20) == 0
+    # threshold=15: waste 15x → 0%
+    assert compute_health_pct(15.0, turns=20) == 0
 
 
 def test_health_pct_mid():
-    # waste=5.5 → 100 * (10 - 5.5) / (10 - 1) = 50%
-    assert compute_health_pct(5.5, turns=20) == 50
+    # threshold=15: waste=8.0 → 100 * (15 - 8) / (15 - 1) = 50%
+    assert compute_health_pct(8.0, turns=20) == 50
 
 
 def test_health_young_session():
@@ -64,16 +65,16 @@ def test_health_young_session():
 
 def test_semaphore_green():
     assert compute_semaphore(100) == "green"
-    assert compute_semaphore(60) == "green"
+    assert compute_semaphore(50) == "green"
 
 
 def test_semaphore_yellow():
-    assert compute_semaphore(59) == "yellow"
-    assert compute_semaphore(30) == "yellow"
+    assert compute_semaphore(49) == "yellow"
+    assert compute_semaphore(20) == "yellow"
 
 
 def test_semaphore_red():
-    assert compute_semaphore(29) == "red"
+    assert compute_semaphore(19) == "red"
     assert compute_semaphore(0) == "red"
 
 

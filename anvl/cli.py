@@ -381,7 +381,11 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     )
 
     if args.reset:
+        from .calibration import GROWTH_CURVE_FILE
+
         reset_calibration()
+        if GROWTH_CURVE_FILE.exists():
+            GROWTH_CURVE_FILE.unlink()
         console.print("[green]Calibration data reset.[/green]")
         bl_str = format_tokens(DEFAULT_BASELINE)
         console.print(f"[dim]Default baseline ({bl_str}/turn) will be used until recalibrated.[/dim]")
@@ -409,12 +413,23 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         return
 
     # Active scan: collect all sessions to record any missing baselines
+    from .calibration import build_growth_curve, save_growth_curve
     from .sessions import _session_cache, collect_all_sessions
 
     _session_cache["ts"] = 0  # invalidate cache to force fresh scan
     console.print("[dim]Scanning sessions...[/dim]")
     sessions = collect_all_sessions()
     total_sessions = len([s for s in sessions if s.turns >= 5])
+
+    # Rebuild growth curve
+    curve = build_growth_curve(sessions)
+    if curve.get("growth_p75"):
+        save_growth_curve(curve)
+        max_turn = len(curve["growth_p75"])
+        console.print(
+            f"[dim]Growth curve updated ({curve.get('session_count', 0)} sessions,"
+            f" {max_turn} turns, fresh cost: {format_tokens(curve.get('fresh_cost_p50', 0))})[/dim]"
+        )
 
     # Display results
     info = get_calibration_info()

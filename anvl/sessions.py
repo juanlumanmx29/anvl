@@ -45,6 +45,9 @@ class SessionSummary:
     # Calibrated baseline from historical sessions (always has a value)
     calibrated_baseline: int = 0
 
+    # Growth curve for growth-aware waste calculation
+    growth_curve: dict = field(default_factory=dict)
+
     @property
     def session_baseline(self) -> int:
         """Second lowest tokens/turn from first 5 turns.
@@ -77,27 +80,46 @@ class SessionSummary:
 
     @property
     def waste_factor(self) -> float:
-        """Peak waste: max avg_window / baseline across all windows.
+        """Combined waste: max(relative, absolute).
 
-        Uses calibrated baseline if available (global, from all sessions),
-        otherwise falls back to min(first 5 turns). With a calibrated
-        baseline, health works from turn 1 — no warmup needed.
+        Signal A (relative): is this session growing faster than the
+        historical p75 growth curve at this turn index?
+        Signal B (absolute): is the current cost much higher than a
+        fresh session would cost?  Guarantees alerts even for sessions
+        with "normal" growth that have simply run too long.
         """
-        baseline = self.effective_baseline
-        if baseline <= 0:
-            return 1.0
         tokens = self.per_turn_tokens
         if not tokens:
             return 1.0
-        # Use smaller window when we have fewer turns (min 1, max 5)
+
         window = min(5, len(tokens))
-        peak = 1.0
-        for i in range(len(tokens) - window + 1):
-            avg = sum(tokens[i : i + window]) / window
-            w = avg / baseline
-            if w > peak:
-                peak = w
-        return max(1.0, round(peak, 1))
+        recent_avg = sum(tokens[-window:]) / window
+        turn_idx = len(tokens) - 1
+
+        # --- Signal A: relative waste vs growth curve ---
+        baseline = self.effective_baseline
+        curve = self.growth_curve
+        growth_p75 = curve.get("growth_p75", []) if curve else []
+
+        if baseline > 0 and growth_p75:
+            idx = min(turn_idx, len(growth_p75) - 1)
+            expected = max(growth_p75[idx], 1.0)
+            actual = recent_avg / baseline
+            relative = actual / expected
+        elif baseline > 0:
+            # No curve — fall back to simple ratio
+            relative = recent_avg / baseline
+        else:
+            relative = 1.0
+
+        # --- Signal B: absolute waste vs fresh session cost ---
+        fresh = (curve.get("fresh_cost_p50", 0) if curve else 0) or baseline
+        if fresh > 0:
+            absolute = recent_avg / fresh
+        else:
+            absolute = 1.0
+
+        return max(1.0, round(max(relative, absolute), 1))
 
     @property
     def health_pct(self) -> int:
@@ -311,6 +333,11 @@ def collect_all_sessions() -> list[SessionSummary]:
     ):
         return _session_cache["summaries"]
 
+    # Load growth curve once for all sessions
+    from .calibration import get_growth_curve
+
+    curve = get_growth_curve()
+
     summaries = []
 
     # Build map of active sessions from PID files
@@ -373,6 +400,7 @@ def collect_all_sessions() -> list[SessionSummary]:
                     turns=totals["turns"],
                     per_turn_tokens=per_turn,
                     calibrated_baseline=calibrated,
+                    growth_curve=curve,
                 )
             )
 
