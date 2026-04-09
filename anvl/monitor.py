@@ -199,7 +199,7 @@ def build_monitor_display() -> Group:
             Text.from_markup(
                 f"  [bold yellow]Update available:[/bold yellow]"
                 f" {__version__} → {latest}"
-                f"  [dim]pip install --upgrade anvl[/dim]"
+                f"  [dim]pip install --upgrade anvl-monitor[/dim]"
             )
         )
 
