@@ -178,24 +178,26 @@ def hook_entrypoint(can_block: bool = True) -> None:
     from .parser import find_active_session
     from .sessions import SessionSummary, _quick_token_sum
 
-    # Prefer the session_id from hook input (matches the CURRENT session)
-    # to avoid picking up an old inflated session in the same project.
+    # Trust the session_id from hook input — it identifies the CURRENT
+    # session. If its jsonl doesn't exist yet, the session is warming up
+    # (Claude Code hasn't flushed turns to disk). Do NOT fall back to
+    # "most recent log", which picks up a stale inflated session from a
+    # previous run in the same project.
     hook_session_id = hook_input.get("session_id", "")
     if hook_session_id:
         project_dir = find_project_dir(cwd)
-        if project_dir:
-            jsonl_path = project_dir / f"{hook_session_id}.jsonl"
-            if jsonl_path.exists():
-                result = (jsonl_path, hook_session_id)
-            else:
-                result = find_active_session(cwd)
-        else:
-            result = find_active_session(cwd)
+        if project_dir is None:
+            return
+        jsonl_path = project_dir / f"{hook_session_id}.jsonl"
+        if not jsonl_path.exists():
+            return
+        result = (jsonl_path, hook_session_id)
     else:
+        # Defensive fallback: no session_id in hook input (not current
+        # Claude Code behavior, but handle gracefully).
         result = find_active_session(cwd)
-
-    if result is None:
-        return
+        if result is None:
+            return
 
     jsonl_path, session_id = result
 
