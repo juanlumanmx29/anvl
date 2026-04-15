@@ -58,3 +58,70 @@ def test_total_input_property():
     session = parse_session_file(FIXTURES / "minimal.jsonl")
     usage = session.turns[0].usage
     assert usage.total_input == 10 + 500 + 200
+
+
+def test_compute_churn_empty():
+    from anvl.parser import compute_churn_from_tools
+
+    stats = compute_churn_from_tools([])
+    assert stats.churn_score == 0.0
+    assert stats.health_tier == "green"
+
+
+def test_compute_churn_warmup():
+    from anvl.parser import ToolUseRecord, compute_churn_from_tools
+
+    # < 5 turns always stays green
+    tools = [[ToolUseRecord(name="Read", file_path=f"/f{i}.py")] for i in range(3)]
+    stats = compute_churn_from_tools(tools)
+    assert stats.health_tier == "green"
+    assert "warming up" in stats.health_reason
+
+
+def test_compute_churn_productive():
+    from anvl.parser import ToolUseRecord, compute_churn_from_tools
+
+    # 10 productive edits, no redundant reads -> very green
+    tools = [
+        [ToolUseRecord(name="Read", file_path=f"/f{i}.py"), ToolUseRecord(name="Edit", file_path=f"/f{i}.py")]
+        for i in range(10)
+    ]
+    stats = compute_churn_from_tools(tools)
+    assert stats.churn_score == 0.0
+    assert stats.health_tier == "green"
+    assert stats.productive_edit_count == 10
+
+
+def test_compute_churn_stuck():
+    from anvl.parser import ToolUseRecord, compute_churn_from_tools
+
+    # Session reads the same 3 files over and over with few edits
+    tools = []
+    for _ in range(10):
+        tools.append(
+            [
+                ToolUseRecord(name="Read", file_path="/a.py"),
+                ToolUseRecord(name="Read", file_path="/b.py"),
+                ToolUseRecord(name="Read", file_path="/c.py"),
+            ]
+        )
+    # Add a single edit so low_activity floor doesn't kick in
+    tools[-1].append(ToolUseRecord(name="Edit", file_path="/a.py"))
+
+    stats = compute_churn_from_tools(tools)
+    assert stats.churn_score > 3.0  # very high churn
+    assert stats.health_tier == "critical"
+
+
+def test_compute_churn_low_activity_floor():
+    from anvl.parser import ToolUseRecord, compute_churn_from_tools
+
+    # 10 turns with only 1 redundant read and 1 edit — insufficient sample
+    tools: list[list[ToolUseRecord]] = [[] for _ in range(10)]
+    tools[0].append(ToolUseRecord(name="Read", file_path="/a.py"))
+    tools[1].append(ToolUseRecord(name="Read", file_path="/a.py"))  # redundant
+    tools[2].append(ToolUseRecord(name="Edit", file_path="/a.py"))
+
+    stats = compute_churn_from_tools(tools)
+    assert stats.churn_score == 0.0
+    assert stats.health_tier == "green"

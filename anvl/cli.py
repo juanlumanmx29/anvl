@@ -36,10 +36,17 @@ from .parser import (
 
 console = Console(force_terminal=True)
 
-SEMAPHORE_ICONS = {
-    "green": "[bold green]●[/bold green]",
-    "yellow": "[bold yellow]●[/bold yellow]",
-    "red": "[bold red]●[/bold red]",
+TIER_ICONS = {
+    "green": "[bold green]🟢[/bold green]",
+    "yellow": "[bold yellow]🟡[/bold yellow]",
+    "red": "[bold red]🔴[/bold red]",
+    "critical": "[bold bright_red]⛔[/bold bright_red]",
+}
+TIER_COLORS = {
+    "green": "green",
+    "yellow": "yellow",
+    "red": "red",
+    "critical": "bright_red",
 }
 
 
@@ -67,14 +74,8 @@ def cmd_status(args: argparse.Namespace) -> None:
             sys.exit(1)
         jsonl_path, _ = result
 
-    from .calibration import get_calibrated_baseline, get_growth_curve
-
     session = parse_session_file(jsonl_path)
-    metrics = analyze_session(
-        session,
-        calibrated_baseline=get_calibrated_baseline(),
-        growth_curve=get_growth_curve(),
-    )
+    metrics = analyze_session(session)
 
     if args.json:
         import json
@@ -83,13 +84,16 @@ def cmd_status(args: argparse.Namespace) -> None:
             "session_id": metrics.session_id,
             "ai_title": metrics.ai_title,
             "turns": metrics.turn_count,
-            "health_pct": metrics.health_pct,
-            "waste_factor": metrics.waste_factor,
+            "churn_score": metrics.churn_score,
+            "health_tier": metrics.health_tier,
+            "health_reason": metrics.health_reason,
+            "redundant_reads": metrics.redundant_read_count,
+            "productive_edits": metrics.productive_edit_count,
             "baseline_per_turn": metrics.baseline_per_turn,
             "current_per_turn": metrics.current_per_turn,
+            "inflation_ratio": metrics.inflation_ratio,
             "total_input": metrics.total_input_tokens,
             "total_output": metrics.total_output_tokens,
-            "semaphore": metrics.semaphore,
             "trend": metrics.trend,
         }
         console.print_json(json.dumps(data))
@@ -100,8 +104,8 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 def _print_status(metrics: SessionMetrics, session) -> None:
     """Render status to terminal with rich."""
-    icon = SEMAPHORE_ICONS[metrics.semaphore]
-    color = metrics.semaphore
+    icon = TIER_ICONS.get(metrics.health_tier, "●")
+    color = TIER_COLORS.get(metrics.health_tier, "white")
 
     title = f'ANVL Status \u2014 "{metrics.ai_title}"'
     lines = []
@@ -114,13 +118,20 @@ def _print_status(metrics: SessionMetrics, session) -> None:
         f"Output: [bold]{format_tokens(metrics.total_output_tokens)}[/bold]"
     )
     lines.append(
-        f"Waste: [bold {color}]{metrics.waste_factor:.1f}x[/bold {color}] | "
+        f"Health: {icon} [{color}][bold]{metrics.health_tier.upper()}[/bold][/{color}] | "
+        f"Churn: [bold {color}]{metrics.churn_score}[/bold {color}]  [dim]({metrics.health_reason})[/dim]"
+    )
+    lines.append(
         f"Baseline: [dim]{format_tokens(metrics.baseline_per_turn)}/turn[/dim] | "
         f"Current: [bold]{format_tokens(metrics.current_per_turn)}/turn[/bold] | "
+        f"Inflation: {metrics.inflation_ratio}x | "
         f"Trend: {metrics.trend}"
     )
-    lines.append("")
-    lines.append(f"Health: {icon} [{color}][bold]{metrics.health_pct}%[/bold][/{color}]")
+
+    if metrics.most_reread_files:
+        lines.append("")
+        top = ", ".join(f"{Path(p).name}({n})" for p, n in metrics.most_reread_files[:5])
+        lines.append(f"Most re-read: [dim]{top}[/dim]")
 
     # Token breakdown per turn (last 10)
     if metrics.per_turn:
@@ -152,10 +163,10 @@ def _print_status(metrics: SessionMetrics, session) -> None:
 
 
 def cmd_handoff(args: argparse.Namespace) -> None:
-    """Generate handoff.md for the current session."""
+    """Generate a handoff for the current session (auto-saved under .anvl/handoffs/)."""
     from .handoff import generate_handoff
 
-    cwd = Path(args.cwd) if args.cwd else None
+    cwd = Path(args.cwd) if args.cwd else Path.cwd()
     result = find_active_session(cwd)
     if result is None:
         result = find_latest_session(cwd)
@@ -163,23 +174,68 @@ def cmd_handoff(args: argparse.Namespace) -> None:
         console.print("[red]No session found.[/red]")
         sys.exit(1)
 
-    from .calibration import get_calibrated_baseline, get_growth_curve
-
     jsonl_path, _ = result
     session = parse_session_file(jsonl_path)
-    metrics = analyze_session(
-        session,
-        calibrated_baseline=get_calibrated_baseline(),
-        growth_curve=get_growth_curve(),
-    )
+    if not session.cwd:
+        session.cwd = str(cwd)
+    metrics = analyze_session(session)
 
-    output_path = Path(args.output) if args.output else Path(session.cwd or ".") / "handoff.md"
-    generate_handoff(session, metrics, output_path)
-    console.print(f"[green]Handoff generated:[/green] {output_path}")
+    output_path = generate_handoff(session, metrics, project_dir=cwd)
+    console.print(f"[green]Handoff saved:[/green] {output_path}")
+    console.print("[dim]CLAUDE.md index updated.[/dim]")
+
+
+def cmd_handoffs(args: argparse.Namespace) -> None:
+    """List, show, or archive handoffs for the current project."""
+    from .handoff import archive_handoff, list_handoffs
+
+    cwd = Path(args.cwd) if args.cwd else Path.cwd()
+
+    if args.handoffs_action == "archive":
+        if not args.session_short:
+            console.print("[red]Usage: anvl handoffs archive <session_short>[/red]")
+            sys.exit(1)
+        result = archive_handoff(cwd, args.session_short)
+        if result:
+            console.print(f"[green]Archived:[/green] {result}")
+        else:
+            console.print(f"[red]No handoff found for session {args.session_short}[/red]")
+        return
+
+    if args.handoffs_action == "show":
+        if not args.session_short:
+            console.print("[red]Usage: anvl handoffs show <session_short>[/red]")
+            sys.exit(1)
+        handoffs = list_handoffs(cwd, include_archived=True)
+        for h in handoffs:
+            if h.session_short == args.session_short:
+                console.print(h.path.read_text(encoding="utf-8"))
+                return
+        console.print(f"[red]No handoff found for session {args.session_short}[/red]")
+        return
+
+    # list (default)
+    handoffs = list_handoffs(cwd, include_archived=args.all)
+    if not handoffs:
+        console.print("[dim]No handoffs in this project.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Status", width=8)
+    table.add_column("When", width=18)
+    table.add_column("Session", width=10)
+    table.add_column("Title", max_width=40)
+    table.add_column("Turns", justify="right", width=6)
+    table.add_column("Churn", justify="right", width=6)
+    for h in handoffs:
+        when = h.generated_at[:16].replace("T", " ") if h.generated_at else "-"
+        status = "[green]active[/green]" if h.status == "active" else "[dim]archived[/dim]"
+        table.add_row(status, when, h.session_short, h.ai_title[:40], str(h.turns), str(h.churn))
+    console.print(table)
 
 
 def cmd_monitor(args: argparse.Namespace) -> None:
-    """Launch live terminal monitor. Works from any directory."""
+    """Launch live terminal monitor."""
     from .monitor import monitor_session
 
     monitor_session(refresh_interval=args.interval)
@@ -196,14 +252,18 @@ def cmd_report(args: argparse.Namespace) -> None:
 CLAUDE_MD_CONTENT = """\
 # ANVL Session Monitor
 
-ANVL monitors this session's health. When ANVL reports the session is inflated:
-1. Finish your current task
-2. The handoff has been saved to handoff.md
-3. Suggest the user start a new conversation
+ANVL tracks session health via the **churn** metric (redundant file reads
+vs productive edits). When ANVL reports churn climbing:
 
-When the user says "continue" or "read handoff.md":
-1. Read handoff.md for full context
+1. Finish your current task
+2. Suggest the user start a new conversation — the handoff is saved automatically
+
+When handoffs exist in `.anvl/handoffs/`:
+1. Read the relevant handoff file for full context
 2. Continue the work described there
+
+See the `## Active handoffs` section below (auto-managed by ANVL) for the
+current index of saved handoffs.
 """
 
 
@@ -217,18 +277,21 @@ def _write_claude_md(cwd: Path | None = None) -> Path | None:
     if claude_md.exists():
         content = claude_md.read_text(encoding="utf-8")
         if marker in content:
-            return claude_md  # Already has ANVL section
-        # Append to existing CLAUDE.md
+            return claude_md
         content = content.rstrip() + "\n\n" + CLAUDE_MD_CONTENT
         claude_md.write_text(content, encoding="utf-8")
     else:
         claude_md.write_text(CLAUDE_MD_CONTENT, encoding="utf-8")
 
+    # Also refresh the handoff index block
+    from .handoff import update_claude_md_index
+
+    update_claude_md_index(target_dir)
     return claude_md
 
 
 def cmd_init(args: argparse.Namespace) -> None:
-    """First-time setup: create config, install hooks, write CLAUDE.md."""
+    """First-time setup."""
     from rich.align import Align
     from rich.console import Group
     from rich.text import Text
@@ -248,32 +311,28 @@ def cmd_init(args: argparse.Namespace) -> None:
         )
     )
 
-    # Step 1: Config
     save_default_config()
     console.print(f"  [green]+[/green] Config created at [cyan]{ANVL_CONFIG_FILE}[/cyan]")
 
-    # Step 2: Hooks
     install_hook()
     console.print("  [green]+[/green] Hooks installed in Claude Code settings")
 
-    # Step 3: CLAUDE.md
     cwd = Path(args.cwd) if args.cwd else None
     claude_md = _write_claude_md(cwd)
     if claude_md:
         console.print(f"  [green]+[/green] CLAUDE.md updated at [cyan]{claude_md}[/cyan]")
 
-    # Step 4: Quick start guide
     console.print("")
     console.print(
         Panel(
             "[bold]Quick start:[/bold]\n\n"
-            "  [cyan]anvl calibrate[/cyan]   - Scan existing sessions and build your baseline\n"
-            "  [cyan]anvl status[/cyan]      - Check current session health\n"
+            "  [cyan]anvl status[/cyan]      - Check current session health (churn)\n"
             "  [cyan]anvl sessions[/cyan]    - See all sessions with usage stats\n"
             "  [cyan]anvl monitor[/cyan]     - Live terminal monitor (works from anywhere)\n"
-            "  [cyan]anvl handoff[/cyan]     - Generate session summary for rotation\n\n"
-            "ANVL will now alert you when a session gets inflated.\n"
-            "Run [cyan]anvl calibrate[/cyan] to build your baseline from existing sessions.",
+            "  [cyan]anvl handoff[/cyan]     - Save handoff for current session\n"
+            "  [cyan]anvl handoffs[/cyan]    - List / show / archive saved handoffs\n\n"
+            "ANVL auto-saves a handoff on every user message and alerts you when\n"
+            "a session becomes churny (reading the same files repeatedly).",
             title="[bold]Setup complete[/bold]",
             border_style=CYAN,
         )
@@ -281,16 +340,13 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_install(args: argparse.Namespace) -> None:
-    """Install ANVL hook in Claude Code settings."""
     from .hooks import install_hook
 
     install_hook()
     console.print("[green]\u2713 ANVL hook installed.[/green]")
-    console.print("[dim]Tip: Run `anvl init` for full first-time setup.[/dim]")
 
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
-    """Remove ANVL hook from Claude Code settings."""
     from .hooks import uninstall_hook
 
     uninstall_hook()
@@ -299,7 +355,6 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
 
 def cmd_sessions(args: argparse.Namespace) -> None:
     """Show all Claude sessions across projects with usage stats."""
-    from .analyzer import format_tokens
     from .sessions import collect_all_sessions
 
     console.print("[dim]Scanning sessions...[/dim]")
@@ -309,36 +364,33 @@ def cmd_sessions(args: argparse.Namespace) -> None:
         console.print("[red]No sessions found.[/red]")
         sys.exit(1)
 
-    # Count active and inflated sessions
     active = [s for s in summaries if s.is_active]
-    inflated = [s for s in active if s.waste_factor > 5]
+    churning = [s for s in active if s.health_tier != "green"]
 
-    color = "red" if inflated else "green"
+    color = "red" if churning else "green"
     header_lines = [
-        f"Active sessions: [bold]{len(active)}[/bold] | "
-        f"Inflated (>5x cost): [bold {color}]{len(inflated)}[/bold {color}]",
+        f"Active sessions: [bold]{len(active)}[/bold] | Churning: [bold {color}]{len(churning)}[/bold {color}]",
     ]
-    if inflated:
-        worst = max(inflated, key=lambda s: s.waste_factor)
+    if churning:
+        worst = max(churning, key=lambda s: s.churn_score)
         header_lines.append(
-            f"Worst: [bold red]{worst.project}[/bold red] — {worst.waste_factor:.0f}x waste, "
-            f"{worst.turns} turns. Run [bold]anvl handoff[/bold] to rotate."
+            f"Worst: [bold red]{worst.project}[/bold red] — churn {worst.churn_score} ({worst.health_tier}), "
+            f"{worst.turns} turns. Run [bold]anvl handoff[/bold] and rotate."
         )
 
-    border = "red" if inflated else "green"
+    border = "red" if churning else "green"
     console.print(Panel("\n".join(header_lines), title="[bold]ANVL — Sessions[/bold]", border_style=border))
 
-    # Sessions table
     table = Table(show_header=True, header_style="bold", expand=True)
-    table.add_column("", width=2)  # active indicator
+    table.add_column("", width=2)
     table.add_column("Project", max_width=20)
     table.add_column("Title", max_width=30)
     table.add_column("Turns", justify="right", width=6)
+    table.add_column("Churn", justify="right", width=6)
     table.add_column("Input", justify="right", width=8)
     table.add_column("Output", justify="right", width=8)
     table.add_column("Started", width=16)
 
-    # Filter sessions
     from datetime import datetime as dt
     from datetime import timezone as tz
 
@@ -353,7 +405,6 @@ def cmd_sessions(args: argparse.Namespace) -> None:
             continue
         filtered.append(s)
 
-    # Limit display unless --all
     display = filtered if args.show_all else filtered[:20]
 
     active_count = 0
@@ -363,12 +414,14 @@ def cmd_sessions(args: argparse.Namespace) -> None:
             active_count += 1
 
         started_str = s.started_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        tier_color = TIER_COLORS.get(s.health_tier, "white")
 
         table.add_row(
             indicator,
             s.project[:20],
             s.ai_title[:30],
             str(s.turns),
+            f"[{tier_color}]{s.churn_score}[/{tier_color}]",
             format_tokens(s.total_input),
             format_tokens(s.total_output),
             started_str,
@@ -379,101 +432,6 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     total = len(filtered)
     extra = f" (showing {shown}/{total}, use --all for full list)" if shown < total else ""
     console.print(f"\n[dim]Active: {active_count} | Total: {total} sessions{extra}[/dim]")
-
-
-def cmd_calibrate(args: argparse.Namespace) -> None:
-    """Scan sessions, view, export, import, or reset calibration data."""
-    from .calibration import (
-        DEFAULT_BASELINE,
-        export_calibration,
-        get_calibrated_baseline,
-        get_calibration_info,
-        import_calibration,
-        reset_calibration,
-    )
-
-    if args.reset:
-        from .calibration import GROWTH_CURVE_FILE
-
-        reset_calibration()
-        if GROWTH_CURVE_FILE.exists():
-            GROWTH_CURVE_FILE.unlink()
-        console.print("[green]Calibration data reset.[/green]")
-        bl_str = format_tokens(DEFAULT_BASELINE)
-        console.print(f"[dim]Default baseline ({bl_str}/turn) will be used until recalibrated.[/dim]")
-        return
-
-    if getattr(args, "import_file", None):
-        path = Path(args.import_file)
-        if not path.exists():
-            console.print(f"[red]File not found:[/red] {path}")
-            return
-        added = import_calibration(path)
-        info = get_calibration_info()
-        console.print(f"[green]Imported {added} new baselines.[/green] Total: {info['session_count']} sessions.")
-        bl = get_calibrated_baseline()
-        console.print(f"Global baseline: [cyan]{format_tokens(bl)}[/cyan]/turn")
-        return
-
-    if args.export:
-        path = Path(args.export)
-        export_calibration(path)
-        info = get_calibration_info()
-        console.print(f"[green]Calibration exported to:[/green] {path}")
-        bl_str = format_tokens(get_calibrated_baseline())
-        console.print(f"[dim]{info['session_count']} sessions, baseline: {bl_str}/turn[/dim]")
-        return
-
-    # Active scan: collect all sessions to record any missing baselines
-    from .calibration import build_growth_curve, save_growth_curve
-    from .sessions import _session_cache, collect_all_sessions
-
-    _session_cache["ts"] = 0  # invalidate cache to force fresh scan
-    console.print("[dim]Scanning sessions...[/dim]")
-    sessions = collect_all_sessions()
-    total_sessions = len([s for s in sessions if s.turns >= 5])
-
-    # Rebuild growth curve
-    curve = build_growth_curve(sessions)
-    if curve.get("growth_p75"):
-        save_growth_curve(curve)
-        max_turn = len(curve["growth_p75"])
-        console.print(
-            f"[dim]Growth curve updated ({curve.get('session_count', 0)} sessions,"
-            f" {max_turn} turns, fresh cost: {format_tokens(curve.get('fresh_cost_p50', 0))})[/dim]"
-        )
-
-    # Display results
-    info = get_calibration_info()
-    calibrated = info.get("calibrated_baseline")
-    baselines = info.get("baselines", [])
-    count = info.get("session_count", 0)
-
-    lines = [
-        f"Sessions scanned: [bold]{total_sessions}[/bold] (with 5+ turns)",
-        f"Baselines recorded: [bold]{count}[/bold]",
-    ]
-
-    if calibrated:
-        import statistics
-
-        lines.append(f"Global baseline: [bold cyan]{format_tokens(calibrated)}[/bold cyan]/turn (median)")
-        lines.append(f"Range: {format_tokens(min(baselines))} — {format_tokens(max(baselines))}")
-        if len(baselines) >= 4:
-            q1, q3 = statistics.quantiles(baselines, n=4)[0], statistics.quantiles(baselines, n=4)[2]
-            lines.append(f"IQR: {format_tokens(int(q1))} — {format_tokens(int(q3))}")
-        lines.append(f"Last updated: [dim]{info.get('last_updated', 'unknown')}[/dim]")
-    else:
-        remaining = info.get("min_needed", 3) - count
-        lines.append(f"[yellow]Need {remaining} more session(s) to calibrate[/yellow]")
-        lines.append(f"Default baseline: [dim]{format_tokens(DEFAULT_BASELINE)}/turn[/dim]")
-
-    console.print(Panel("\n".join(lines), title="Global Calibration", border_style="cyan"))
-    console.print(
-        "[dim]Export: [cyan]anvl calibrate --export file.json[/cyan]  │  "
-        "Import: [cyan]anvl calibrate --import file.json[/cyan]  │  "
-        "Reset: [cyan]anvl calibrate --reset[/cyan][/dim]"
-    )
 
 
 def cmd_hook(args: argparse.Namespace) -> None:
@@ -487,19 +445,18 @@ def cmd_hook(args: argparse.Namespace) -> None:
 
         hook_entrypoint(can_block=True)
     else:
-        # PostToolUse: warn only, never block
-        from .hooks import hook_entrypoint
+        from .hooks import post_tool_use_entrypoint
 
-        hook_entrypoint(can_block=False)
+        post_tool_use_entrypoint()
 
 
 COMMANDS_HELP = [
     ("init", "First-time setup (config + hooks + CLAUDE.md)"),
-    ("status", "Show current session health metrics"),
+    ("status", "Show current session health (churn)"),
     ("sessions", "List all sessions with usage stats"),
     ("monitor", "Live terminal dashboard"),
-    ("handoff", "Generate handoff.md for session rotation"),
-    ("calibrate", "Scan sessions and manage baseline calibration"),
+    ("handoff", "Save handoff for current session"),
+    ("handoffs", "List / show / archive saved handoffs"),
     ("report", "Generate report for all project sessions"),
     ("install", "Install ANVL hook in Claude Code"),
     ("uninstall", "Remove ANVL hook from Claude Code"),
@@ -507,7 +464,6 @@ COMMANDS_HELP = [
 
 
 def _print_styled_help() -> None:
-    """Print branded help instead of argparse default."""
     from rich.align import Align
     from rich.console import Group
     from rich.text import Text
@@ -519,7 +475,6 @@ def _print_styled_help() -> None:
     )
     console.print(Panel(banner_group, border_style=CYAN))
 
-    # Commands list
     lines = Text()
     lines.append("  Commands:\n\n", style="bold white")
     for cmd, desc in COMMANDS_HELP:
@@ -547,40 +502,36 @@ def main() -> None:
     parser.add_argument("-h", "--help", action="store_true", help="Show help")
     subparsers = parser.add_subparsers(dest="command")
 
-    # status
     sp = subparsers.add_parser("status", help="Show current session metrics")
     sp.add_argument("--session", help="Session ID (default: auto-detect)")
     sp.add_argument("--json", action="store_true", help="Output as JSON")
 
-    # handoff
-    sp = subparsers.add_parser("handoff", help="Generate handoff.md")
-    sp.add_argument("-o", "--output", help="Output file path")
+    sp = subparsers.add_parser("handoff", help="Save handoff for current session")
 
-    # monitor
+    sp = subparsers.add_parser("handoffs", help="List / show / archive handoffs")
+    sp.add_argument(
+        "handoffs_action",
+        nargs="?",
+        default="list",
+        choices=["list", "show", "archive"],
+        help="Action to perform",
+    )
+    sp.add_argument("session_short", nargs="?", help="Session short id (for show/archive)")
+    sp.add_argument("--all", action="store_true", help="Include archived handoffs")
+
     sp = subparsers.add_parser("monitor", help="Live terminal monitor")
     sp.add_argument("--interval", type=float, default=2.0, help="Refresh interval in seconds")
 
-    # sessions
     sp = subparsers.add_parser("sessions", help="Show all sessions with usage stats")
     sp.add_argument("--active", action="store_true", help="Show only active sessions")
     sp.add_argument("--today", action="store_true", help="Show only today's sessions")
     sp.add_argument("--all", action="store_true", dest="show_all", help="Show all sessions (default: last 20)")
 
-    # report
     subparsers.add_parser("report", help="Report on all project sessions")
-
-    # init / install / uninstall
     subparsers.add_parser("init", help="First-time setup (config + hook)")
     subparsers.add_parser("install", help="Install ANVL hook in Claude Code")
     subparsers.add_parser("uninstall", help="Remove ANVL hook from Claude Code")
 
-    # calibrate
-    sp = subparsers.add_parser("calibrate", help="Scan sessions and manage calibration")
-    sp.add_argument("--reset", action="store_true", help="Reset calibration data")
-    sp.add_argument("--export", metavar="FILE", help="Export calibration to file")
-    sp.add_argument("--import", dest="import_file", metavar="FILE", help="Import calibration from file")
-
-    # hook (hidden - called by Claude Code)
     sp = subparsers.add_parser("hook")
     sp.add_argument("event", choices=["post-tool-use", "user-prompt-submit", "session-start"])
 
@@ -598,10 +549,10 @@ def main() -> None:
         "init": cmd_init,
         "status": cmd_status,
         "handoff": cmd_handoff,
+        "handoffs": cmd_handoffs,
         "monitor": cmd_monitor,
         "sessions": cmd_sessions,
         "report": cmd_report,
-        "calibrate": cmd_calibrate,
         "install": cmd_install,
         "uninstall": cmd_uninstall,
         "hook": cmd_hook,

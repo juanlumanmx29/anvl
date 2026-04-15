@@ -8,21 +8,27 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .calibration import get_calibrated_baseline, record_baseline
 from .config import get_projects_dir, get_sessions_dir
+from .parser import ToolUseRecord, compute_churn_from_tools
 
 # Simple mtime-based cache for collect_all_sessions
 _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
 _CACHE_TTL = 3.0  # seconds
 
-# Weighted token costs matching Claude's actual pricing ratios
-# These weights approximate real quota impact
+# Weighted token costs matching Claude's actual pricing ratios.
+# These weights approximate real quota impact.
 TOKEN_WEIGHTS = {
     "input": 1.0,
     "cache_read": 0.1,  # Cache reads are ~90% cheaper
     "cache_creation": 1.25,  # Slightly more expensive than regular input
     "output": 5.0,  # Output tokens cost ~5x input
 }
+
+# Baseline is computed from the median token cost of turns 3..7 (inclusive).
+# Turns 1-2 include the system prompt and handoff reads, so they inflate
+# the baseline. Turn 8+ is where normal work starts.
+BASELINE_TURN_START = 2  # 0-indexed turn 2 = human turn 3
+BASELINE_TURN_END = 7  # 0-indexed turn 6 = human turn 7 (exclusive: slice [2:7])
 
 
 @dataclass
@@ -42,92 +48,47 @@ class SessionSummary:
     turns: int = 0
     per_turn_tokens: list[int] = field(default_factory=list)
 
-    # Calibrated baseline from historical sessions (always has a value)
-    calibrated_baseline: int = 0
-
-    # Growth curve for growth-aware waste calculation
-    growth_curve: dict = field(default_factory=dict)
-
-    @property
-    def session_baseline(self) -> int:
-        """Median tokens/turn from first 5 turns.
-
-        Median is robust against outliers on both ends — handles
-        handoff reads (high) and trivially cheap turns (low).
-        """
-        import statistics
-
-        window = 5
-        if len(self.per_turn_tokens) < window:
-            return 0
-        return int(statistics.median(self.per_turn_tokens[:window]))
+    # Churn metric (primary health signal)
+    churn_score: float = 0.0
+    redundant_read_count: int = 0
+    productive_edit_count: int = 0
+    health_tier: str = "green"  # green | yellow | red | critical
+    health_reason: str = ""
+    most_reread_files: list[tuple[str, int]] = field(default_factory=list)
 
     @property
-    def effective_baseline(self) -> int:
-        """Baseline used for waste calculation.
+    def session_baseline_tpt(self) -> int:
+        """Median tokens/turn in turns 3..7 (1-indexed).
 
-        Prefers calibrated baseline (global median of fresh session costs)
-        because session_baseline is unreliable — sessions that start with
-        handoff reads or heavy context already have inflated early turns.
-        Falls back to session_baseline only when no calibration exists.
-        """
-        return self.calibrated_baseline or self.session_baseline
-
-    @property
-    def waste_factor(self) -> float:
-        """Peak waste: highest 5-turn avg / calibrated baseline.
-
-        Uses the worst (highest) 5-turn window average across the entire
-        session, not just the latest.  Health never improves — once a
-        session inflates, it stays marked.
+        Robust anchor that excludes warmup turns (system prompt, handoff read)
+        and the long tail where context has grown naturally.
         """
         tokens = self.per_turn_tokens
-        if not tokens:
-            return 1.0
-
-        baseline = self.effective_baseline
-        if baseline <= 0:
-            return 1.0
-
-        window = min(5, len(tokens))
-        # Find peak 5-turn average across all windows
-        peak_avg = 0
-        for i in range(len(tokens) - window + 1):
-            avg = sum(tokens[i : i + window]) / window
-            peak_avg = max(peak_avg, avg)
-
-        return max(1.0, round(peak_avg / baseline, 1))
+        if len(tokens) < BASELINE_TURN_START + 1:
+            return 0
+        window = tokens[BASELINE_TURN_START:BASELINE_TURN_END]
+        if not window:
+            return 0
+        return int(statistics.median(window))
 
     @property
-    def health_pct(self) -> int:
-        """Session health as percentage (0-100).
+    def inflation_ratio(self) -> float:
+        """Secondary informational metric: recent tpt / baseline tpt.
 
-        Linear from 1x (100%) to 15x (0%).  Gradual scale so sessions
-        don't hit red too quickly.
+        Not used to trigger alerts — only displayed in alert text for context.
         """
-        n = len(self.per_turn_tokens)
-        if n < 2:
-            return 100
-        # Without calibration, need 5 turns for session-only baseline
-        if self.calibrated_baseline == 0 and n < 5:
-            return 100
-        w = self.waste_factor
-        if w <= 1.0:
-            return 100
-        threshold = 10.0
-        if w >= threshold:
-            return 0
-        return max(0, int(100 * (threshold - w) / (threshold - 1)))
+        baseline = self.session_baseline_tpt
+        if baseline <= 0 or len(self.per_turn_tokens) < BASELINE_TURN_END:
+            return 1.0
+        recent = self.per_turn_tokens[-5:]
+        if not recent:
+            return 1.0
+        return round((sum(recent) / len(recent)) / baseline, 1)
 
     @property
     def efficiency(self) -> str:
-        """Session health color: green/yellow/red derived from health %."""
-        pct = self.health_pct
-        if pct >= 50:
-            return "green"
-        elif pct >= 20:
-            return "yellow"
-        return "red"
+        """Backwards-compat alias for health_tier (used by monitor UI colors)."""
+        return self.health_tier
 
     @property
     def weighted_cost(self) -> float:
@@ -140,11 +101,11 @@ class SessionSummary:
         )
 
 
-def _quick_token_sum(jsonl_path: Path) -> dict:
-    """Fast token counting from JSONL. Returns dict with detailed breakdown.
+def _quick_session_stats(jsonl_path: Path) -> dict:
+    """Fast single-pass session parser for token totals + tool uses per turn.
 
-    Also collects per-turn token totals for waste factor calculation.
-    Deduplicates by requestId — only the last record per API call is kept.
+    Returns a dict with token breakdown, per-turn totals, and per-turn
+    tool_uses lists (for churn computation).
     """
     totals = {
         "input": 0,  # raw input_tokens
@@ -153,14 +114,24 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
         "output": 0,
         "turns": 0,
         "per_turn_tokens": [],  # total tokens per user turn
+        "tools_per_turn": [],  # list[list[ToolUseRecord]]
     }
 
-    # Track usage per requestId; keep latest (has final usage)
     request_usage: dict[str, dict] = {}
-    # Per-turn tracking
     current_turn_direct = 0
     turn_request_usage: dict[str, int] = {}
+    current_tool_uses: list[ToolUseRecord] = []
     in_turn = False
+
+    def _finalize_turn():
+        nonlocal current_turn_direct, turn_request_usage, current_tool_uses
+        turn_total = current_turn_direct + sum(turn_request_usage.values())
+        if turn_total > 0:
+            totals["per_turn_tokens"].append(turn_total)
+            totals["tools_per_turn"].append(current_tool_uses)
+        current_turn_direct = 0
+        turn_request_usage = {}
+        current_tool_uses = []
 
     try:
         with open(jsonl_path, "r", encoding="utf-8") as f:
@@ -178,25 +149,20 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
                     content = record.get("message", {}).get("content", [])
                     is_tool_result = any(isinstance(c, dict) and "tool_use_id" in c for c in content)
                     if not is_tool_result:
-                        # Save previous turn
                         if in_turn:
-                            turn_total = current_turn_direct + sum(turn_request_usage.values())
-                            if turn_total > 0:
-                                totals["per_turn_tokens"].append(turn_total)
-                        current_turn_direct = 0
-                        turn_request_usage = {}
+                            _finalize_turn()
                         in_turn = True
                         totals["turns"] += 1
 
                 elif rtype == "assistant":
-                    usage = record.get("message", {}).get("usage", {})
+                    msg = record.get("message", {})
+                    usage = msg.get("usage", {})
                     if usage:
                         inp = usage.get("input_tokens", 0)
                         cr = usage.get("cache_read_input_tokens", 0)
                         cc = usage.get("cache_creation_input_tokens", 0)
                         out = usage.get("output_tokens", 0)
                         total = inp + cr + cc + out
-
                         request_id = record.get("requestId", "")
                         if request_id:
                             request_usage[request_id] = usage
@@ -207,16 +173,25 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
                             totals["cache_creation"] += cc
                             totals["output"] += out
                             current_turn_direct += total
+
+                    # Extract tool uses for churn
+                    for block in msg.get("content", []):
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            name = block.get("name", "")
+                            inp = block.get("input", {})
+                            current_tool_uses.append(
+                                ToolUseRecord(
+                                    name=name,
+                                    file_path=inp.get("file_path") or inp.get("path") or inp.get("pattern"),
+                                    command=inp.get("command"),
+                                )
+                            )
     except OSError:
         pass
 
-    # Save last turn
     if in_turn:
-        turn_total = current_turn_direct + sum(turn_request_usage.values())
-        if turn_total > 0:
-            totals["per_turn_tokens"].append(turn_total)
+        _finalize_turn()
 
-    # Sum deduplicated usage
     for usage in request_usage.values():
         totals["input"] += usage.get("input_tokens", 0)
         totals["cache_read"] += usage.get("cache_read_input_tokens", 0)
@@ -224,6 +199,10 @@ def _quick_token_sum(jsonl_path: Path) -> dict:
         totals["output"] += usage.get("output_tokens", 0)
 
     return totals
+
+
+# Backwards-compat alias: older code paths may still call _quick_token_sum.
+_quick_token_sum = _quick_session_stats
 
 
 def _get_ai_title(jsonl_path: Path) -> str:
@@ -261,7 +240,6 @@ def _is_process_running(pid: int) -> bool:
                 ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"], capture_output=True, text=True, timeout=3
             )
             output = result.stdout.lower()
-            # Must be a node.exe or claude process, not a recycled PID
             return str(pid) in output and ("node" in output or "claude" in output)
         else:
             os.kill(pid, 0)
@@ -288,6 +266,42 @@ def _build_mtime_key(projects_dir: Path) -> str:
     return "|".join(parts)
 
 
+def _build_summary_from_stats(
+    session_id: str,
+    project: str,
+    cwd: str,
+    ai_title: str,
+    pid: int,
+    started_at: datetime,
+    is_active: bool,
+    stats: dict,
+) -> SessionSummary:
+    """Build a SessionSummary with churn computed from the stats dict."""
+    churn = compute_churn_from_tools(stats.get("tools_per_turn", []))
+    return SessionSummary(
+        session_id=session_id,
+        project=project,
+        cwd=cwd,
+        ai_title=ai_title or "Untitled",
+        pid=pid,
+        started_at=started_at,
+        is_active=is_active,
+        total_input=stats["input"] + stats["cache_read"] + stats["cache_creation"],
+        total_output=stats["output"],
+        cache_read=stats["cache_read"],
+        cache_creation=stats["cache_creation"],
+        raw_input=stats["input"],
+        turns=stats["turns"],
+        per_turn_tokens=stats["per_turn_tokens"],
+        churn_score=churn.churn_score,
+        redundant_read_count=churn.redundant_read_count,
+        productive_edit_count=churn.productive_edit_count,
+        health_tier=churn.health_tier,
+        health_reason=churn.health_reason,
+        most_reread_files=churn.most_reread_files,
+    )
+
+
 def collect_all_sessions() -> list[SessionSummary]:
     """Collect all sessions across all projects.
 
@@ -300,7 +314,6 @@ def collect_all_sessions() -> list[SessionSummary]:
     if not projects_dir.exists():
         return []
 
-    # Check cache validity
     now = time.monotonic()
     mtime_key = _build_mtime_key(projects_dir)
     if (
@@ -309,11 +322,6 @@ def collect_all_sessions() -> list[SessionSummary]:
         and (now - _session_cache["ts"]) < _CACHE_TTL
     ):
         return _session_cache["summaries"]
-
-    # Load growth curve once for all sessions
-    from .calibration import get_growth_curve
-
-    curve = get_growth_curve()
 
     summaries = []
 
@@ -349,35 +357,19 @@ def collect_all_sessions() -> list[SessionSummary]:
 
             is_active = bool(pid) and _is_process_running(pid)
             ai_title = _get_ai_title(jsonl_file)
-            totals = _quick_token_sum(jsonl_file)
+            stats = _quick_session_stats(jsonl_file)
             project_name = _extract_project_name(cwd) if cwd else project_dir.name
 
-            # Auto-calibration: record baseline and get global calibrated one
-            per_turn = totals["per_turn_tokens"]
-            if len(per_turn) >= 5:
-                session_bl = int(statistics.median(per_turn[:5]))
-                if session_bl > 0:
-                    record_baseline(session_id, session_bl)
-            calibrated = get_calibrated_baseline()
-
             summaries.append(
-                SessionSummary(
+                _build_summary_from_stats(
                     session_id=session_id,
                     project=project_name,
                     cwd=cwd,
-                    ai_title=ai_title or "Untitled",
+                    ai_title=ai_title,
                     pid=pid,
                     started_at=started_at,
                     is_active=is_active,
-                    total_input=totals["input"] + totals["cache_read"] + totals["cache_creation"],
-                    total_output=totals["output"],
-                    cache_read=totals["cache_read"],
-                    cache_creation=totals["cache_creation"],
-                    raw_input=totals["input"],
-                    turns=totals["turns"],
-                    per_turn_tokens=per_turn,
-                    calibrated_baseline=calibrated,
-                    growth_curve=curve,
+                    stats=stats,
                 )
             )
 
@@ -414,23 +406,14 @@ def compute_window_usage(
 
 
 def compute_savings(summaries: list[SessionSummary]) -> dict:
-    """Compute real token savings from session rotation.
+    """Compute session rotation savings using per-session baselines.
 
-    Measures savings by comparing: when you start a fresh session after an
-    inflated one, the first turns cost much less than continuing would have.
-
-    Savings per rotation = (prev session's last avg/turn - new session's
-    first avg/turn) × benefited turns.
-
-    Also computes total waste = actual input above baseline cost.
+    Waste = how many tokens a session consumed above its own baseline × turns.
+    Savings = when rotating to a fresh session, how much cheaper the new
+    session's early turns are vs the previous session's tail.
     """
     from collections import defaultdict
 
-    from .calibration import get_calibrated_baseline
-
-    global_bl = get_calibrated_baseline() or 0
-
-    # Group by project, sorted by time
     by_project: dict[str, list[SessionSummary]] = defaultdict(list)
     for s in summaries:
         if s.turns >= 5 and s.per_turn_tokens:
@@ -441,27 +424,22 @@ def compute_savings(summaries: list[SessionSummary]) -> dict:
     total_wasted = 0
     total_saved = 0
 
-    for proj, sess_list in by_project.items():
+    for _proj, sess_list in by_project.items():
         for i, s in enumerate(sess_list):
-            # Wasted = actual input above what baseline turns would cost
-            ideal = global_bl * s.turns if global_bl else 0
-            if ideal > 0:
-                total_wasted += max(0, s.total_input - ideal)
+            baseline = s.session_baseline_tpt
+            if baseline > 0:
+                ideal = baseline * s.turns
+                total_wasted += max(0, sum(s.per_turn_tokens) - ideal)
 
-            # Saved: compare fresh start cost vs continuing previous session
             if i > 0:
                 prev = sess_list[i - 1]
                 if not prev.per_turn_tokens:
                     continue
-                # Previous session's last 5-turn avg (what continuing would cost)
                 tail = prev.per_turn_tokens[-5:]
                 prev_avg = sum(tail) / len(tail)
-                # This session's first 5-turn avg (fresh start cost)
                 head = s.per_turn_tokens[:5]
                 fresh_avg = sum(head) / len(head)
-                # Savings per turn from starting fresh
                 saving_per_turn = max(0, prev_avg - fresh_avg)
-                # First ~10 turns benefit from fresh context
                 benefited = min(s.turns, 10)
                 total_saved += int(saving_per_turn * benefited)
 

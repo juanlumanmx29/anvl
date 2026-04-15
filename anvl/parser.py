@@ -277,6 +277,157 @@ def find_latest_session(cwd: Path | None = None) -> tuple[Path, str] | None:
     return None
 
 
+@dataclass
+class ChurnStats:
+    """Churn metric: redundant reads / productive edits over a rolling window.
+
+    A high churn score means Claude is re-reading the same files repeatedly
+    instead of making progress — the signal of an inflated session.
+    """
+
+    churn_score: float  # redundant_reads / max(1, productive_edits)
+    redundant_read_count: int
+    productive_edit_count: int
+    unique_files_read: int
+    most_reread_files: list[tuple[str, int]]  # [(path, read_count), ...]
+    window_turns: int  # how many turns were actually analyzed
+    health_tier: str  # "green" | "yellow" | "red" | "critical"
+    health_reason: str  # short human explanation
+
+
+def compute_churn(
+    turns: list[Turn],
+    window: int = 10,
+    yellow: float = 0.5,
+    red: float = 1.5,
+    critical: float = 3.0,
+) -> ChurnStats:
+    """Compute churn over the last `window` turns (high-level wrapper)."""
+    return compute_churn_from_tools(
+        [turn.tool_uses for turn in turns],
+        window=window,
+        yellow=yellow,
+        red=red,
+        critical=critical,
+    )
+
+
+def compute_churn_from_tools(
+    tools_per_turn: list[list["ToolUseRecord"]],
+    window: int = 10,
+    yellow: float = 0.5,
+    red: float = 1.5,
+    critical: float = 3.0,
+) -> ChurnStats:
+    """Compute churn directly from tool use lists per turn.
+
+    Redundant reads = Read/Grep/Glob of a file_path already seen earlier in
+    the FULL session (not just the window). Reading a new file for the first
+    time never counts as redundant, even if the count is in the current window.
+
+    Productive edits = Write(weight=2) + Edit(weight=1) within the window.
+    """
+    if not tools_per_turn:
+        return ChurnStats(
+            churn_score=0.0,
+            redundant_read_count=0,
+            productive_edit_count=0,
+            unique_files_read=0,
+            most_reread_files=[],
+            window_turns=0,
+            health_tier="green",
+            health_reason="no turns yet",
+        )
+
+    # Minimum session length: below 5 turns the churn signal isn't reliable.
+    # Claude typically scans several files during warmup and the ratio swings
+    # wildly. Always report green until the session has 5+ turns.
+    if len(tools_per_turn) < 5:
+        return ChurnStats(
+            churn_score=0.0,
+            redundant_read_count=0,
+            productive_edit_count=0,
+            unique_files_read=0,
+            most_reread_files=[],
+            window_turns=len(tools_per_turn),
+            health_tier="green",
+            health_reason=f"warming up ({len(tools_per_turn)} turns)",
+        )
+
+    # Track all file reads across the entire session to detect redundancy
+    seen_files: set[str] = set()
+    # Count total reads per file (for the "most reread" report)
+    read_counts: dict[str, int] = {}
+
+    # Walk turns up to the end of the window
+    window_start = max(0, len(tools_per_turn) - window)
+
+    redundant_reads = 0
+    productive_edits = 0
+
+    for i, tool_list in enumerate(tools_per_turn):
+        for tool in tool_list:
+            if tool.name in ("Read", "Grep", "Glob") and tool.file_path:
+                path = tool.file_path
+                if path in seen_files:
+                    # Redundant read — but only count if it's in the window
+                    if i >= window_start:
+                        redundant_reads += 1
+                    read_counts[path] = read_counts.get(path, 1) + 1
+                else:
+                    seen_files.add(path)
+                    read_counts[path] = 1
+            elif tool.name == "Write" and i >= window_start:
+                productive_edits += 2
+            elif tool.name == "Edit" and i >= window_start:
+                productive_edits += 1
+
+    raw_churn = redundant_reads / max(1, productive_edits)
+
+    # Most reread files (top 5)
+    most_reread = sorted(
+        ((p, c) for p, c in read_counts.items() if c > 1),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:5]
+
+    # Sample floor: if there's very little activity in the window, the
+    # denominator is too small to trust. Report churn as 0 (green) rather
+    # than the misleading raw ratio.
+    low_activity = productive_edits < 3 and redundant_reads < 3
+    churn_score = 0.0 if low_activity else raw_churn
+
+    # Health tier
+    if churn_score < yellow:
+        tier = "green"
+    elif churn_score < red:
+        tier = "yellow"
+    elif churn_score < critical:
+        tier = "red"
+    else:
+        tier = "critical"
+
+    # Human reason — only report what happened in the window
+    win_len = min(window, len(tools_per_turn))
+    if low_activity:
+        reason = f"low activity in last {win_len} turns ({redundant_reads} re-reads, {productive_edits} edit-weight)"
+    elif redundant_reads == 0:
+        reason = f"no redundant reads in last {win_len} turns"
+    else:
+        reason = f"re-read files {redundant_reads}x vs {productive_edits} edit-weight in last {win_len} turns"
+
+    return ChurnStats(
+        churn_score=round(churn_score, 2),
+        redundant_read_count=redundant_reads,
+        productive_edit_count=productive_edits,
+        unique_files_read=len(seen_files),
+        most_reread_files=most_reread,
+        window_turns=min(window, len(tools_per_turn)),
+        health_tier=tier,
+        health_reason=reason,
+    )
+
+
 def find_project_sessions(cwd: Path | None = None) -> list[Path]:
     """Find all JSONL session files for the project."""
     if cwd is None:

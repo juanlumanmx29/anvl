@@ -8,12 +8,15 @@ ANVL_CONFIG_DIR = Path.home() / ".anvl"
 ANVL_CONFIG_FILE = ANVL_CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG = {
-    "waste_threshold": 2,  # Cost-weighted: green < 2x, yellow 2-5x, red > 5x
-    "handoff_template": "default",
     "auto_detect_project": True,
-    "window_hours": 5,  # Rolling window size (Max 5x = 5h)
-    "weighted_quota_limit": 105_000_000,  # Weighted token budget (calibrated for Max 5x)
-    "handoff_waste_threshold": 10,  # Auto-handoff when cost-weighted waste exceeds this
+    "window_hours": 5,  # Rolling quota window
+    "weighted_quota_limit": 105_000_000,
+    # Churn-based alert thresholds (redundant reads / productive edits)
+    "churn_yellow": 0.5,
+    "churn_red": 1.5,
+    "churn_critical": 3.0,
+    "churn_window": 10,  # rolling turn window for churn
+    "handoffs_dir": ".anvl/handoffs",
 }
 
 

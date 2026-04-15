@@ -24,8 +24,20 @@ from rich.text import Text
 from . import __version__
 from .analyzer import format_tokens
 from .branding import styled_banner, styled_subtitle, styled_tagline
-from .calibration import DEFAULT_BASELINE, get_calibration_info
 from .sessions import collect_all_sessions, compute_savings
+
+TIER_COLORS = {
+    "green": "green",
+    "yellow": "yellow",
+    "red": "red",
+    "critical": "bright_red",
+}
+TIER_ICONS = {
+    "green": "🟢",
+    "yellow": "🟡",
+    "red": "🔴",
+    "critical": "⛔",
+}
 
 # Update check cache (check at most once per hour)
 _update_cache: dict = {"latest": None, "checked_at": 0.0}
@@ -51,7 +63,9 @@ def _check_for_update() -> str | None:
         latest = data.get("info", {}).get("version", "")
         if latest and latest != __version__:
             # Only notify if PyPI version is actually newer
-            _to_tuple = lambda v: tuple(int(x) for x in v.split("."))
+            def _to_tuple(v: str) -> tuple:
+                return tuple(int(x) for x in v.split("."))
+
             if _to_tuple(latest) > _to_tuple(__version__):
                 _update_cache["latest"] = latest
             else:
@@ -63,9 +77,10 @@ def _check_for_update() -> str | None:
     return _update_cache["latest"]
 
 
-def _health_bar(pct: int, color: str, bar_len: int = 20) -> str:
-    """Render a colored health bar."""
-    filled = int(pct / 100 * bar_len)
+def _churn_bar(churn: float, color: str, bar_len: int = 20, max_churn: float = 3.0) -> str:
+    """Render a colored bar — fills up as churn approaches max_churn."""
+    pct = min(1.0, churn / max_churn) if max_churn > 0 else 0.0
+    filled = int(pct * bar_len)
     return f"[{color}]{'█' * filled}{'░' * (bar_len - filled)}[/{color}]"
 
 
@@ -91,73 +106,61 @@ def _current_avg(s) -> int:
 
 
 def build_monitor_display() -> Group:
-    """Build the redesigned monitor display — clean, scannable, one line per session."""
+    """Build the monitor display — one line per active session, churn-based."""
     summaries = collect_all_sessions()
     active = [s for s in summaries if s.is_active]
 
-    # Calibration info
-    cal_info = get_calibration_info()
-    cal_bl = cal_info.get("calibrated_baseline")
-    cal_count = cal_info.get("session_count", 0)
-    if cal_bl:
-        cal_str = f"[cyan]{format_tokens(cal_bl)}[/cyan]/turn [dim]({cal_count} sessions)[/dim]"
-    else:
-        cal_str = f"[dim]{format_tokens(DEFAULT_BASELINE)}/turn (default)[/dim]"
+    header = (
+        "  Churn thresholds: [green]<0.5[/green] [yellow]<1.5[/yellow] "
+        f"[red]<3[/red] [bright_red]≥3[/bright_red]  │  Active: [bold]{len(active)}[/bold]"
+    )
 
-    header = f"  Ref. cost/turn: {cal_str}  │  Active: [bold]{len(active)}[/bold]"
-
-    # Build session lines — one per session, health bar prominent
     session_lines: list[str] = []
 
     if not active:
         session_lines.append("  [dim]No active sessions[/dim]")
     else:
-        # Find max title length for alignment
         titles = []
         for s in active:
             proj = s.project or "?"
             ai = s.ai_title or "Untitled"
-            title = f"{proj} > {ai}"[:40]
-            titles.append(title)
+            titles.append(f"{proj} > {ai}"[:40])
 
         for i, s in enumerate(active):
-            color = s.efficiency
-            pct = s.health_pct
+            tier = s.health_tier
+            color = TIER_COLORS.get(tier, "white")
+            icon = TIER_ICONS.get(tier, "●")
             title = titles[i]
             elapsed = _elapsed(s.started_at)
-            waste = s.waste_factor
-            dot = f"[{color}]●[/{color}]"
             cost_str = format_tokens(int(s.weighted_cost))
 
             if s.turns == 0:
-                session_lines.append(f"  {dot} {title:<40s}  [dim]waiting...[/dim]")
-            elif s.turns < 5:
+                session_lines.append(f"  {icon} {title:<40s}  [dim]waiting...[/dim]")
+            elif s.turns < 3:
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
                 session_lines.append(
-                    f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}"
+                    f"  {icon} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}"
                     f"  [dim]warming up...[/dim]  [cyan]{cost_str}[/cyan]"
                 )
             else:
-                bar = _health_bar(pct, color, bar_len=20)
+                bar = _churn_bar(s.churn_score, color)
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
-                waste_str = f"[{color}]{waste:.1f}x[/{color}]"
+                churn_str = f"[{color}]{s.churn_score:.2f}[/{color}]"
 
                 session_lines.append(
-                    f"  {dot} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  "
-                    f"[{color}]{pct:>3}%[/{color}] {bar} {waste_str}  [cyan]{cost_str}[/cyan]"
+                    f"  {icon} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  "
+                    f"churn {churn_str} {bar}  [cyan]{cost_str}[/cyan]"
                 )
 
-                # Inline detail for unhealthy sessions (only with enough data)
-                if pct < 50 and s.turns >= 10:
-                    bl = s.effective_baseline
+                if tier != "green" and s.turns >= 5:
                     cur = _current_avg(s)
-                    cost_str = f"~{format_tokens(bl)} → ~{format_tokens(cur)}/turn"
-                    if pct < 10:
-                        session_lines.append(f"    [red]⚠ CRITICAL — {waste:.0f}x cost ({cost_str})[/red]")
-                    elif pct < 20:
-                        session_lines.append(f"    [red]⚠ INFLATED — {waste:.0f}x cost ({cost_str})[/red]")
+                    bl = s.session_baseline_tpt
+                    if bl > 0:
+                        ratio = round(cur / bl, 1) if bl else 1.0
+                        cost_detail = f"~{format_tokens(bl)} → ~{format_tokens(cur)}/turn ({ratio}x)"
                     else:
-                        session_lines.append(f"    [yellow]● elevated — {waste:.1f}x cost ({cost_str})[/yellow]")
+                        cost_detail = f"~{format_tokens(cur)}/turn"
+                    session_lines.append(f"    [{color}]⚠ {tier.upper()} — {s.health_reason} · {cost_detail}[/{color}]")
 
     # Compose panel content
     content_parts = [
@@ -193,7 +196,7 @@ def build_monitor_display() -> Group:
 
     parts.append(
         Text.from_markup(
-            "  [dim]% = session health (100% fresh, 0% depleted) │ Nx = cost multiplier │ cost = weighted tokens[/dim]"
+            "  [dim]churn = redundant reads / productive edits (10-turn window) │ cost = weighted tokens[/dim]"
         )
     )
 

@@ -1,18 +1,18 @@
-"""Waste factor computation and session metrics analysis.
+"""Session metrics analysis — churn-based health model.
 
-Waste factor follows the Clauditor approach:
-  waste = avg_tokens_per_turn(last 5) / avg_tokens_per_turn(first 5)
-
-This measures how much the session has *grown* compared to its baseline,
-not an abstract input/output ratio.  A fresh session starts at 1x.
+The primary health signal is churn: how many redundant file reads happen
+relative to productive edits. This replaces the previous waste_factor model
+which measured token growth vs a global baseline.
 """
 
+import statistics
 from dataclasses import dataclass, field
 
-from .parser import SessionData, TokenUsage
+from .parser import SessionData, TokenUsage, compute_churn
 
-# Window size for baseline and current averages
-BASELINE_WINDOW = 5
+# Window size for baseline tpt (turns 3..7 inclusive in 1-indexed terms)
+BASELINE_TURN_START = 2  # 0-indexed start
+BASELINE_TURN_END = 7  # 0-indexed exclusive end
 
 
 @dataclass
@@ -39,87 +39,57 @@ class SessionMetrics:
     total_output_tokens: int = 0
     total_cache_read: int = 0
     total_cache_creation: int = 0
-    waste_factor: float = 1.0
+    # Churn-based health (replaces waste_factor)
+    churn_score: float = 0.0
+    redundant_read_count: int = 0
+    productive_edit_count: int = 0
+    health_tier: str = "green"  # green | yellow | red | critical
+    health_reason: str = ""
+    most_reread_files: list[tuple[str, int]] = field(default_factory=list)
+    # Session-relative baseline (informational)
     baseline_per_turn: int = 0
     current_per_turn: int = 0
-    health_pct: int = 100
-    semaphore: str = "green"
+    inflation_ratio: float = 1.0
     trend: str = "stable"
     per_turn: list[TurnMetrics] = field(default_factory=list)
 
 
 def _total_tokens(usage: TokenUsage) -> int:
-    """Total tokens for a turn (all input categories + output)."""
     return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
 
 
-def compute_waste_factor(
-    per_turn: list[TurnMetrics],
-    window: int = BASELINE_WINDOW,
-    calibrated_baseline: int | None = None,
-    growth_curve: dict | None = None,
-) -> tuple[float, int, int]:
-    """Peak waste: highest 5-turn avg / calibrated baseline.
+def compute_session_baseline(per_turn: list[TurnMetrics]) -> int:
+    """Median tokens/turn from turns 3..7 (1-indexed), excluding tool-only turns.
 
-    Health never improves — uses the worst window across the session.
-
-    Returns (waste_factor, baseline_per_turn, current_per_turn).
-    With < window turns, waste is always 1.0.
+    Stable anchor that avoids system-prompt inflation (turns 1-2) and
+    long-session context growth (turns 8+).
     """
-    meaningful = [t for t in per_turn if not t.is_tool_only]
-    if len(meaningful) < window:
-        if meaningful:
-            avg = sum(t.total_tokens for t in meaningful) // len(meaningful)
-            return 1.0, avg, avg
-        return 1.0, 0, 0
-
-    # Median of first N turns — robust against outliers (handoff reads, cheap turns)
-    import statistics
-
-    session_baseline = int(statistics.median(t.total_tokens for t in meaningful[:window]))
-    # Prefer calibrated baseline — session baseline is unreliable when
-    # sessions start with handoff reads or heavy context
-    effective_bl = calibrated_baseline or session_baseline
-
-    current_avg = sum(t.total_tokens for t in meaningful[-window:]) // window
-
-    if effective_bl == 0:
-        return 1.0, 0, current_avg
-
-    # Peak 5-turn average across all windows — health never improves
-    totals = [t.total_tokens for t in meaningful]
-    peak_avg = 0
-    for i in range(len(totals) - window + 1):
-        avg = sum(totals[i : i + window]) / window
-        peak_avg = max(peak_avg, avg)
-
-    waste = max(1.0, round(peak_avg / effective_bl, 1))
-    return waste, effective_bl, current_avg
-
-
-def compute_health_pct(waste: float, turns: int = 0, threshold: float = 10.0) -> int:
-    """Session health as percentage (0-100).
-
-    Maps waste linearly from 1x (100%) to threshold (0%).
-    Sessions with fewer than 5 turns always return 100%.
-    """
-    if turns < BASELINE_WINDOW:
-        return 100
-    if waste <= 1.0:
-        return 100
-    if waste >= threshold:
+    meaningful = [t.total_tokens for t in per_turn if not t.is_tool_only]
+    if len(meaningful) < BASELINE_TURN_START + 1:
         return 0
-    # Linear interpolation: 1x→100%, threshold→0%
-    return max(0, min(100, int(100 * (threshold - waste) / (threshold - 1))))
+    window = meaningful[BASELINE_TURN_START:BASELINE_TURN_END]
+    if not window:
+        return 0
+    return int(statistics.median(window))
 
 
-def compute_semaphore(health_pct: int) -> str:
-    """Green/yellow/red derived from health percentage."""
-    if health_pct >= 50:
-        return "green"
-    elif health_pct >= 20:
-        return "yellow"
-    return "red"
+def compute_inflation_ratio(per_turn: list[TurnMetrics]) -> tuple[float, int, int]:
+    """Returns (inflation_ratio, baseline_per_turn, current_per_turn).
+
+    Inflation = median(last 5 turns) / session baseline.  Informational only —
+    not used to trigger alerts.
+    """
+    baseline = compute_session_baseline(per_turn)
+    meaningful = [t.total_tokens for t in per_turn if not t.is_tool_only]
+    if not meaningful:
+        return 1.0, baseline, 0
+
+    tail = meaningful[-5:]
+    current = int(sum(tail) / len(tail)) if tail else 0
+
+    if baseline == 0:
+        return 1.0, baseline, current
+    return round(current / baseline, 1), baseline, current
 
 
 def compute_trend(per_turn: list[TurnMetrics], window: int = 5) -> str:
@@ -145,12 +115,8 @@ def compute_trend(per_turn: list[TurnMetrics], window: int = 5) -> str:
     return "stable"
 
 
-def analyze_session(
-    session: SessionData,
-    calibrated_baseline: int | None = None,
-    growth_curve: dict | None = None,
-) -> SessionMetrics:
-    """Compute full metrics for a session."""
+def analyze_session(session: SessionData) -> SessionMetrics:
+    """Compute full metrics for a session using the churn model."""
     metrics = SessionMetrics(
         session_id=session.session_id,
         ai_title=session.ai_title,
@@ -189,16 +155,21 @@ def analyze_session(
         metrics.total_cache_read += u.cache_read_input_tokens
         metrics.total_cache_creation += u.cache_creation_input_tokens
 
-    # Waste factor: current tokens/turn vs baseline tokens/turn
-    waste, baseline, current = compute_waste_factor(
-        metrics.per_turn, calibrated_baseline=calibrated_baseline, growth_curve=growth_curve
-    )
-    metrics.waste_factor = waste
+    # Churn (primary health signal)
+    churn = compute_churn(session.turns)
+    metrics.churn_score = churn.churn_score
+    metrics.redundant_read_count = churn.redundant_read_count
+    metrics.productive_edit_count = churn.productive_edit_count
+    metrics.health_tier = churn.health_tier
+    metrics.health_reason = churn.health_reason
+    metrics.most_reread_files = churn.most_reread_files
+
+    # Inflation (informational)
+    inflation, baseline, current = compute_inflation_ratio(metrics.per_turn)
+    metrics.inflation_ratio = inflation
     metrics.baseline_per_turn = baseline
     metrics.current_per_turn = current
 
-    metrics.health_pct = compute_health_pct(waste, metrics.turn_count)
-    metrics.semaphore = compute_semaphore(metrics.health_pct)
     metrics.trend = compute_trend(metrics.per_turn)
 
     return metrics

@@ -11,6 +11,13 @@ from .parser import find_project_sessions, parse_session_file
 
 console = Console()
 
+TIER_ICONS = {
+    "green": "[green]🟢[/green]",
+    "yellow": "[yellow]🟡[/yellow]",
+    "red": "[red]🔴[/red]",
+    "critical": "[bright_red]⛔[/bright_red]",
+}
+
 
 def generate_report(cwd: Path | None = None) -> None:
     """Analyze all sessions for a project and display a summary report."""
@@ -26,13 +33,11 @@ def generate_report(cwd: Path | None = None) -> None:
         metrics = analyze_session(session)
         all_metrics.append(metrics)
 
-    # Sort by total input tokens descending
     all_metrics.sort(key=lambda m: m.total_input_tokens, reverse=True)
 
     total_input = sum(m.total_input_tokens for m in all_metrics)
     total_output = sum(m.total_output_tokens for m in all_metrics)
 
-    # Header
     console.print(
         Panel(
             f"Total sessions: [bold]{len(all_metrics)}[/bold] | "
@@ -43,39 +48,33 @@ def generate_report(cwd: Path | None = None) -> None:
         )
     )
 
-    # Sessions table
     table = Table(show_header=True, header_style="bold", expand=True)
     table.add_column("Session", width=10)
     table.add_column("Title", max_width=35)
     table.add_column("Turns", justify="right", width=6)
-    table.add_column("Avg Waste", justify="right", width=10)
-    table.add_column("Peak Waste", justify="right", width=10)
+    table.add_column("Churn", justify="right", width=7)
+    table.add_column("Redund.", justify="right", width=7)
+    table.add_column("Edits", justify="right", width=6)
     table.add_column("Input", justify="right", width=8)
     table.add_column("Output", justify="right", width=8)
-    table.add_column("Semaphore", justify="center", width=10)
+    table.add_column("Tier", justify="center", width=6)
 
     for m in all_metrics:
-        peak_waste = max((t.waste_factor for t in m.per_turn if not t.is_tool_only), default=0)
-        semaphore_icon = {
-            "green": "[green]\u2b24[/green]",
-            "yellow": "[yellow]\u2b24[/yellow]",
-            "red": "[red]\u2b24[/red]",
-        }[m.semaphore]
-
+        icon = TIER_ICONS.get(m.health_tier, "[white]●[/white]")
         table.add_row(
             m.session_id[:8],
-            m.ai_title[:35] if m.ai_title else "Untitled",
+            (m.ai_title or "Untitled")[:35],
             str(m.turn_count),
-            f"{m.waste_factor:.1f}x",
-            f"{peak_waste:.0f}x",
+            f"{m.churn_score}",
+            str(m.redundant_read_count),
+            str(m.productive_edit_count),
             format_tokens(m.total_input_tokens),
             format_tokens(m.total_output_tokens),
-            semaphore_icon,
+            icon,
         )
 
     console.print(table)
 
-    # Most expensive session
     if all_metrics:
         most_expensive = all_metrics[0]
         console.print(
@@ -84,10 +83,9 @@ def generate_report(cwd: Path | None = None) -> None:
             f"({format_tokens(most_expensive.total_input_tokens)} input tokens)"
         )
 
-    # Recommendation
-    high_waste = [m for m in all_metrics if m.waste_factor > 5]
-    if high_waste:
+    churning = [m for m in all_metrics if m.health_tier != "green"]
+    if churning:
         console.print(
-            f"\n[yellow]\u26a0 {len(high_waste)} session(s) with >5x waste. "
-            f"Use `anvl handoff` earlier to reduce token consumption.[/yellow]"
+            f"\n[yellow]⚠ {len(churning)} session(s) with yellow+ churn. "
+            f"Rotate with `anvl handoff` earlier to avoid context pollution.[/yellow]"
         )
