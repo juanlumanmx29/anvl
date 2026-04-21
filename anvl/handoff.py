@@ -15,7 +15,10 @@ from .parser import SessionData
 
 HANDOFFS_DIR_NAME = ".anvl/handoffs"
 ARCHIVE_DIR_NAME = "archive"
-STALE_DAYS = 14
+# Default hours without activity before a handoff is archived. Kept short so
+# abandoned sessions fall off the index fast — users running several parallel
+# sessions need the active set to stay short and distinguishable.
+DEFAULT_INACTIVE_HOURS = 48
 
 HANDOFFS_START = "<!-- anvl:handoffs-start -->"
 HANDOFFS_END = "<!-- anvl:handoffs-end -->"
@@ -34,6 +37,7 @@ class HandoffMeta:
     turns: int
     churn: float
     status: str  # "active" | "archived"
+    last_user_prompt: str = ""
 
 
 def _handoffs_dir(project_dir: Path) -> Path:
@@ -138,11 +142,26 @@ def extract_pending_work(session: SessionData) -> str:
     return "No clear pending work detected."
 
 
+def _last_user_prompt_snippet(session: SessionData, max_len: int = 120) -> str:
+    """Short one-line preview of the last user prompt, safe for YAML frontmatter."""
+    if not session.turns:
+        return ""
+    for turn in reversed(session.turns):
+        if turn.user_text:
+            text = turn.user_text.strip().replace("\n", " ").replace("\r", " ")
+            text = " ".join(text.split())
+            if len(text) > max_len:
+                text = text[: max_len - 1] + "…"
+            return text
+    return ""
+
+
 def _build_front_matter(
     session: SessionData,
     metrics: SessionMetrics,
     generated_at: datetime,
 ) -> str:
+    last_prompt = _last_user_prompt_snippet(session).replace('"', "'")
     lines = [
         "---",
         f"session_id: {session.session_id}",
@@ -153,6 +172,7 @@ def _build_front_matter(
         f"churn: {metrics.churn_score}",
         f"health_tier: {metrics.health_tier}",
         "status: active",
+        f'last_user_prompt: "{last_prompt}"',
         "---",
         "",
     ]
@@ -265,7 +285,11 @@ def _parse_front_matter(path: Path) -> dict:
     for line in body.splitlines():
         if ":" in line:
             k, v = line.split(":", 1)
-            data[k.strip()] = v.strip()
+            v = v.strip()
+            # Strip optional surrounding quotes for string values
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+                v = v[1:-1]
+            data[k.strip()] = v
     return data
 
 
@@ -290,6 +314,7 @@ def list_handoffs(project_dir: Path, include_archived: bool = False) -> list[Han
                 turns=int(meta.get("turns", 0) or 0),
                 churn=float(meta.get("churn", 0) or 0),
                 status="active",
+                last_user_prompt=meta.get("last_user_prompt", ""),
             )
         )
 
@@ -308,6 +333,7 @@ def list_handoffs(project_dir: Path, include_archived: bool = False) -> list[Han
                         turns=int(meta.get("turns", 0) or 0),
                         churn=float(meta.get("churn", 0) or 0),
                         status="archived",
+                        last_user_prompt=meta.get("last_user_prompt", ""),
                     )
                 )
 
@@ -315,8 +341,13 @@ def list_handoffs(project_dir: Path, include_archived: bool = False) -> list[Han
     return results
 
 
-def archive_stale_handoffs(project_dir: Path) -> int:
-    """Move handoff files older than STALE_DAYS into the archive subdir.
+def archive_stale_handoffs(project_dir: Path, inactive_hours: int | None = None) -> int:
+    """Move handoff files with no recent activity into the archive subdir.
+
+    A handoff's mtime is refreshed every time its session submits a prompt
+    (via UserPromptSubmit hook). So mtime older than `inactive_hours` is a
+    reliable abandonment signal — users running parallel sessions want the
+    active index to stay short.
 
     Returns number of files archived.
     """
@@ -326,8 +357,16 @@ def archive_stale_handoffs(project_dir: Path) -> int:
     if not handoffs_dir.exists():
         return 0
 
+    if inactive_hours is None:
+        try:
+            from .config import get_handoff_inactive_hours
+
+            inactive_hours = get_handoff_inactive_hours()
+        except Exception:
+            inactive_hours = DEFAULT_INACTIVE_HOURS
+
     archive = _archive_dir(project_dir)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=inactive_hours)
     archived = 0
 
     for path in handoffs_dir.glob("*.md"):
@@ -374,17 +413,20 @@ def _format_index_section(project_dir: Path) -> str:
         lines.append("_No active handoffs._")
     else:
         lines.append(
-            "A previous session left unfinished work. Read the handoff whose "
-            "title matches the user's request, or ask which one to resume."
+            "Several sessions may be in flight. Pick the handoff whose last "
+            "prompt matches the user's request — if unsure, ask which to resume."
         )
         lines.append("")
-        lines.append("| When | Session | Title | Turns | Churn |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| When | Session | Title | Last prompt | Turns | Churn |")
+        lines.append("|---|---|---|---|---|---|")
         for h in active:
             when = h.generated_at[:16].replace("T", " ") if h.generated_at else "unknown"
-            title = (h.ai_title or "Untitled").replace("|", "\\|")[:60]
+            title = (h.ai_title or "Untitled").replace("|", "\\|")[:50]
+            last = (h.last_user_prompt or "").replace("|", "\\|")[:60]
             rel = h.path.relative_to(project_dir).as_posix() if h.path.is_absolute() else h.path.as_posix()
-            lines.append(f"| {when} | [{h.session_short}]({rel}) | {title} | {h.turns} | {h.churn} |")
+            lines.append(
+                f"| {when} | [{h.session_short}]({rel}) | {title} | {last} | {h.turns} | {h.churn} |"
+            )
 
     if archived:
         lines.append("")

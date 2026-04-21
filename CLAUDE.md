@@ -11,10 +11,16 @@ When handoff.md exists in the project directory:
 <!-- anvl:handoffs-start -->
 ## Active handoffs
 
-A previous session left unfinished work. Read the handoff whose title matches the user's request, or ask which one to resume.
+Several sessions may be in flight. Pick the handoff whose last prompt matches the user's request — if unsure, ask which to resume.
 
-| When | Session | Title | Turns | Churn |
-|---|---|---|---|---|
-| 2026-04-21 11:33 | [7a516c8e](.anvl/handoffs/20260415-1117-7a516c8e.md) | Read handoff.md and continue | 20 | 0.13 |
-| unknown | [legacy00](.anvl/handoffs/20260415-1118-legacy00.md) | Untitled | 0 | 0.0 |
+| When | Session | Title | Last prompt | Turns | Churn |
+|---|---|---|---|---|---|
+| 2026-04-21 12:00 | [2a081f83](.anvl/handoffs/20260421-1152-2a081f83.md) | Debug ANVL monitor alerts and session differentiat | si por favor, haz lo que tu encuentre mejor | 3 | 0.0 |
+| 2026-04-21 11:48 | [7a516c8e](.anvl/handoffs/20260415-1117-7a516c8e.md) | Read handoff.md and continue |  | 22 | 0.07 |
+
+<details><summary>Archived handoffs</summary>
+
+- unknown · legacy00 · Untitled (0 turns, churn 0.0)
+
+</details>
 <!-- anvl:handoffs-end -->

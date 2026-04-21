@@ -20,6 +20,10 @@ DEFAULT_CONFIG = {
     # the 1M-context variants. Override in ~/.anvl/config.json if needed.
     "context_limit": 200_000,
     "handoffs_dir": ".anvl/handoffs",
+    # Hours without handoff refresh before archiving. Users running several
+    # parallel sessions want abandoned ones to fall off the index quickly,
+    # while keeping short gaps (overnight, weekend) safe.
+    "handoff_inactive_hours": 48,
 }
 
 
@@ -30,6 +34,14 @@ def get_context_limit() -> int:
         return int(cfg.get("context_limit", 200_000))
     except (TypeError, ValueError):
         return 200_000
+
+
+def get_handoff_inactive_hours() -> int:
+    cfg = load_config()
+    try:
+        return int(cfg.get("handoff_inactive_hours", 48))
+    except (TypeError, ValueError):
+        return 48
 
 
 def load_config() -> dict:
