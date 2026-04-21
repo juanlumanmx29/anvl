@@ -180,9 +180,11 @@ def analyze_session(session: SessionData) -> SessionMetrics:
         if tm.peak_context > 0:
             last_context = tm.peak_context
             break
-    from .config import get_context_limit
+    from .sessions import _resolve_context_limit
 
-    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=get_context_limit())
+    per_turn_context = [tm.peak_context for tm in metrics.per_turn]
+    limit = _resolve_context_limit(session.model, per_turn_context)
+    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=limit)
     metrics.context_tokens = last_context
     metrics.context_pct = ctx_pct
     metrics.context_tier = ctx_tier

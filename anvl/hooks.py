@@ -169,7 +169,7 @@ def hook_entrypoint(can_block: bool = True) -> None:
 
     # Compute churn + context pressure to decide if we should alert
     from .parser import compute_churn_from_tools, compute_context_tier, worst_tier
-    from .sessions import _quick_session_stats
+    from .sessions import _quick_session_stats, _resolve_context_limit
 
     stats = _quick_session_stats(jsonl_path)
     turns = stats["turns"]
@@ -178,11 +178,10 @@ def hook_entrypoint(can_block: bool = True) -> None:
 
     churn = compute_churn_from_tools(stats.get("tools_per_turn", []))
 
-    from .config import get_context_limit
-
     per_turn_context = stats.get("per_turn_context", [])
     last_context = per_turn_context[-1] if per_turn_context else 0
-    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=get_context_limit())
+    limit = _resolve_context_limit(stats.get("model", ""), per_turn_context)
+    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=limit)
 
     combined_tier = worst_tier(churn.health_tier, ctx_tier)
     if combined_tier == "green":

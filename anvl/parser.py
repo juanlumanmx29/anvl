@@ -49,6 +49,7 @@ class SessionData:
     git_branch: str = ""
     turns: list[Turn] = field(default_factory=list)
     raw_line_count: int = 0
+    model: str = ""  # most recent assistant model id seen
 
 
 def iter_jsonl(path: Path) -> Iterator[dict]:
@@ -167,6 +168,10 @@ def parse_session_file(path: Path) -> SessionData:
         elif rtype == "assistant" and current_turn is not None:
             msg = record.get("message", {})
             request_id = record.get("requestId", "")
+
+            model_id = msg.get("model", "")
+            if model_id:
+                session.model = model_id
 
             # Collect tool uses from all chunks
             content = msg.get("content", [])
@@ -309,6 +314,33 @@ CONTEXT_YELLOW_PCT = 0.50
 CONTEXT_RED_PCT = 0.75
 CONTEXT_CRITICAL_PCT = 0.90
 DEFAULT_CONTEXT_LIMIT = 200_000
+
+# Per-family context window sizes. Opus 4.6 and 4.7 default to the 1M tier
+# in Claude Code — the `[1m]` variant marker is not echoed in the JSONL, so
+# we infer from the family. Anything unknown falls back to 200K.
+_MODEL_FAMILY_LIMITS = {
+    "claude-opus-4-7": 1_000_000,
+    "claude-opus-4-6": 1_000_000,
+}
+
+
+def context_limit_for_model(model_id: str | None) -> int:
+    """Return the context window size (in tokens) implied by the model ID.
+
+    Rules in order:
+    1. If the ID contains a `1m` marker (e.g. `claude-opus-4-5-1m`, `[1m]`) → 1_000_000
+    2. Family-based default (e.g. `claude-opus-4-7` → 1_000_000)
+    3. 200_000 fallback
+    """
+    if not model_id:
+        return DEFAULT_CONTEXT_LIMIT
+    mid = model_id.lower()
+    if "1m" in mid:
+        return 1_000_000
+    for prefix, limit in _MODEL_FAMILY_LIMITS.items():
+        if mid.startswith(prefix):
+            return limit
+    return DEFAULT_CONTEXT_LIMIT
 
 
 def compute_context_tier(

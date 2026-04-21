@@ -8,8 +8,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import get_context_limit, get_projects_dir, get_sessions_dir
-from .parser import ToolUseRecord, compute_churn_from_tools, compute_context_tier, worst_tier
+from .config import get_projects_dir, get_sessions_dir, load_config
+from .parser import (
+    DEFAULT_CONTEXT_LIMIT,
+    ToolUseRecord,
+    compute_churn_from_tools,
+    compute_context_tier,
+    context_limit_for_model,
+    worst_tier,
+)
 
 # Simple mtime-based cache for collect_all_sessions
 _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
@@ -29,6 +36,33 @@ TOKEN_WEIGHTS = {
 # the baseline. Turn 8+ is where normal work starts.
 BASELINE_TURN_START = 2  # 0-indexed turn 2 = human turn 3
 BASELINE_TURN_END = 7  # 0-indexed turn 6 = human turn 7 (exclusive: slice [2:7])
+
+
+def _resolve_context_limit(model_id: str, per_turn_context: list[int]) -> int:
+    """Resolve the per-session context window limit.
+
+    Priority:
+    1. User's explicit config value (`context_limit` in ~/.anvl/config.json)
+       wins when present and not equal to the internal default.
+    2. Model-derived limit from the model ID seen in the JSONL.
+    3. If we observe a turn with context > 200K, we are definitely on a 1M
+       variant — bump accordingly. This self-corrects when the ID alone
+       was ambiguous.
+    """
+    cfg = load_config()
+    explicit = cfg.get("context_limit")
+    if explicit:
+        try:
+            val = int(explicit)
+            if val and val != DEFAULT_CONTEXT_LIMIT:
+                return val
+        except (TypeError, ValueError):
+            pass
+
+    limit = context_limit_for_model(model_id)
+    if per_turn_context and max(per_turn_context) > DEFAULT_CONTEXT_LIMIT:
+        limit = max(limit, 1_000_000)
+    return limit
 
 
 @dataclass
@@ -61,6 +95,8 @@ class SessionSummary:
     context_pct: float = 0.0
     context_tier: str = "green"
     context_reason: str = ""
+    context_limit: int = 200_000  # limit used to classify this session
+    model: str = ""  # most recent assistant model id seen in the JSONL
 
     # Combined health — worst of churn and context tiers
     health_tier: str = "green"
@@ -126,6 +162,7 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
         "per_turn_tokens": [],  # total tokens per user turn
         "per_turn_context": [],  # input + cache_read + cache_creation per turn (what model saw)
         "tools_per_turn": [],  # list[list[ToolUseRecord]]
+        "model": "",  # most recent assistant model id seen
     }
 
     request_usage: dict[str, dict] = {}
@@ -174,6 +211,9 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
 
                 elif rtype == "assistant":
                     msg = record.get("message", {})
+                    model_id = msg.get("model", "")
+                    if model_id:
+                        totals["model"] = model_id
                     usage = msg.get("usage", {})
                     if usage:
                         inp = usage.get("input_tokens", 0)
@@ -302,7 +342,9 @@ def _build_summary_from_stats(
 
     per_turn_context = stats.get("per_turn_context", [])
     last_ctx = per_turn_context[-1] if per_turn_context else 0
-    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_ctx, limit=get_context_limit())
+    model_id = stats.get("model", "")
+    resolved_limit = _resolve_context_limit(model_id, per_turn_context)
+    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_ctx, limit=resolved_limit)
 
     combined_tier = worst_tier(churn.health_tier, ctx_tier)
     if combined_tier == churn.health_tier and churn.health_tier != "green":
@@ -337,6 +379,8 @@ def _build_summary_from_stats(
         context_pct=ctx_pct,
         context_tier=ctx_tier,
         context_reason=ctx_reason,
+        context_limit=resolved_limit,
+        model=model_id,
         health_tier=combined_tier,
         health_reason=combined_reason,
     )

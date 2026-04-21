@@ -197,13 +197,11 @@ def build_monitor_display() -> Group:
             footer_parts.append(f"[red]{format_tokens(wasted)}[/red] wasted by inflation")
         parts.append(Text.from_markup(f"  {' │ '.join(footer_parts)}"))
 
-    from .config import get_context_limit
-
-    ctx_limit_str = format_tokens(get_context_limit())
     parts.append(
         Text.from_markup(
             "  [dim]churn = redundant reads / productive edits (10-turn window) · "
-            f"ctx = % of {ctx_limit_str} window used by current turn · cost = weighted tokens[/dim]"
+            "ctx = % of model's context window used by current turn (auto-detected per session) · "
+            "cost = weighted tokens[/dim]"
         )
     )
 
