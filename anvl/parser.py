@@ -34,6 +34,9 @@ class Turn:
     assistant_text: str = ""
     tool_uses: list[ToolUseRecord] = field(default_factory=list)
     usage: TokenUsage | None = None
+    # Peak context size the model saw in this turn (max across distinct API
+    # requests, since cache_read grows monotonically inside a turn).
+    peak_context: int = 0
     timestamp: str = ""
     is_tool_only: bool = False
 
@@ -191,10 +194,11 @@ def parse_session_file(path: Path) -> SessionData:
 
 
 def _finalize_turn(turn: Turn, request_records: dict[str, dict]) -> None:
-    """Set usage on a turn from the final assistant records in the turn."""
-    # Sum usage across all distinct API requests in this turn
+    """Set usage and peak_context on a turn from its assistant API records."""
+    # Sum usage across distinct API requests for cost accounting
     total_usage = TokenUsage()
-    for request_id, record in request_records.items():
+    peak_context = 0
+    for _request_id, record in request_records.items():
         msg = record.get("message", {})
         usage = _extract_usage(msg)
         if usage:
@@ -202,9 +206,13 @@ def _finalize_turn(turn: Turn, request_records: dict[str, dict]) -> None:
             total_usage.cache_creation_input_tokens += usage.cache_creation_input_tokens
             total_usage.cache_read_input_tokens += usage.cache_read_input_tokens
             total_usage.output_tokens += usage.output_tokens
+            # Peak context = max input+cache_read+cache_creation across requests
+            req_context = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+            peak_context = max(peak_context, req_context)
 
     if total_usage.output_tokens > 0 or total_usage.total_input > 0:
         turn.usage = total_usage
+        turn.peak_context = peak_context
         turn.is_tool_only = total_usage.output_tokens <= 1
 
 
@@ -293,6 +301,47 @@ class ChurnStats:
     window_turns: int  # how many turns were actually analyzed
     health_tier: str  # "green" | "yellow" | "red" | "critical"
     health_reason: str  # short human explanation
+
+
+# Context window thresholds as fraction of the model's context limit.
+# Default assumes a 200K window — adjust via compute_context_tier() if needed.
+CONTEXT_YELLOW_PCT = 0.50
+CONTEXT_RED_PCT = 0.75
+CONTEXT_CRITICAL_PCT = 0.90
+DEFAULT_CONTEXT_LIMIT = 200_000
+
+
+def compute_context_tier(
+    last_turn_tokens: int,
+    limit: int = DEFAULT_CONTEXT_LIMIT,
+) -> tuple[str, float, str]:
+    """Return (tier, pct, reason) for the current context window utilization.
+
+    `last_turn_tokens` should be the sum of input_tokens + cache_read +
+    cache_creation on the most recent turn — that's what the model is
+    seeing right now.
+    """
+    if last_turn_tokens <= 0 or limit <= 0:
+        return "green", 0.0, "context unknown"
+    pct = last_turn_tokens / limit
+    if pct >= CONTEXT_CRITICAL_PCT:
+        tier = "critical"
+    elif pct >= CONTEXT_RED_PCT:
+        tier = "red"
+    elif pct >= CONTEXT_YELLOW_PCT:
+        tier = "yellow"
+    else:
+        tier = "green"
+    reason = f"context {int(pct * 100)}% full ({last_turn_tokens:,} / {limit:,})"
+    return tier, round(pct, 2), reason
+
+
+_TIER_ORDER = {"green": 0, "yellow": 1, "red": 2, "critical": 3}
+
+
+def worst_tier(a: str, b: str) -> str:
+    """Return the worse (higher severity) of two tier strings."""
+    return a if _TIER_ORDER.get(a, 0) >= _TIER_ORDER.get(b, 0) else b
 
 
 def compute_churn(

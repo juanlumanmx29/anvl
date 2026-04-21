@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import get_projects_dir, get_sessions_dir
-from .parser import ToolUseRecord, compute_churn_from_tools
+from .config import get_context_limit, get_projects_dir, get_sessions_dir
+from .parser import ToolUseRecord, compute_churn_from_tools, compute_context_tier, worst_tier
 
 # Simple mtime-based cache for collect_all_sessions
 _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
@@ -52,9 +52,19 @@ class SessionSummary:
     churn_score: float = 0.0
     redundant_read_count: int = 0
     productive_edit_count: int = 0
-    health_tier: str = "green"  # green | yellow | red | critical
-    health_reason: str = ""
+    churn_tier: str = "green"
+    churn_reason: str = ""
     most_reread_files: list[tuple[str, int]] = field(default_factory=list)
+
+    # Context-window pressure (parallel signal)
+    context_tokens: int = 0  # last turn's total input (what the model sees now)
+    context_pct: float = 0.0
+    context_tier: str = "green"
+    context_reason: str = ""
+
+    # Combined health — worst of churn and context tiers
+    health_tier: str = "green"
+    health_reason: str = ""
 
     @property
     def session_baseline_tpt(self) -> int:
@@ -114,23 +124,31 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
         "output": 0,
         "turns": 0,
         "per_turn_tokens": [],  # total tokens per user turn
+        "per_turn_context": [],  # input + cache_read + cache_creation per turn (what model saw)
         "tools_per_turn": [],  # list[list[ToolUseRecord]]
     }
 
     request_usage: dict[str, dict] = {}
     current_turn_direct = 0
     turn_request_usage: dict[str, int] = {}
+    turn_request_context: dict[str, int] = {}  # per-request context size (input+cache)
+    current_turn_direct_context = 0
     current_tool_uses: list[ToolUseRecord] = []
     in_turn = False
 
     def _finalize_turn():
         nonlocal current_turn_direct, turn_request_usage, current_tool_uses
+        nonlocal current_turn_direct_context, turn_request_context
         turn_total = current_turn_direct + sum(turn_request_usage.values())
+        turn_context = current_turn_direct_context + max(turn_request_context.values(), default=0)
         if turn_total > 0:
             totals["per_turn_tokens"].append(turn_total)
+            totals["per_turn_context"].append(turn_context)
             totals["tools_per_turn"].append(current_tool_uses)
         current_turn_direct = 0
+        current_turn_direct_context = 0
         turn_request_usage = {}
+        turn_request_context = {}
         current_tool_uses = []
 
     try:
@@ -163,16 +181,19 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
                         cc = usage.get("cache_creation_input_tokens", 0)
                         out = usage.get("output_tokens", 0)
                         total = inp + cr + cc + out
+                        context_size = inp + cr + cc  # what the model saw
                         request_id = record.get("requestId", "")
                         if request_id:
                             request_usage[request_id] = usage
                             turn_request_usage[request_id] = total
+                            turn_request_context[request_id] = context_size
                         else:
                             totals["input"] += inp
                             totals["cache_read"] += cr
                             totals["cache_creation"] += cc
                             totals["output"] += out
                             current_turn_direct += total
+                            current_turn_direct_context += context_size
 
                     # Extract tool uses for churn
                     for block in msg.get("content", []):
@@ -276,8 +297,21 @@ def _build_summary_from_stats(
     is_active: bool,
     stats: dict,
 ) -> SessionSummary:
-    """Build a SessionSummary with churn computed from the stats dict."""
+    """Build a SessionSummary with churn + context pressure from the stats dict."""
     churn = compute_churn_from_tools(stats.get("tools_per_turn", []))
+
+    per_turn_context = stats.get("per_turn_context", [])
+    last_ctx = per_turn_context[-1] if per_turn_context else 0
+    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_ctx, limit=get_context_limit())
+
+    combined_tier = worst_tier(churn.health_tier, ctx_tier)
+    if combined_tier == churn.health_tier and churn.health_tier != "green":
+        combined_reason = churn.health_reason
+    elif combined_tier == ctx_tier and ctx_tier != "green":
+        combined_reason = ctx_reason
+    else:
+        combined_reason = churn.health_reason or ctx_reason
+
     return SessionSummary(
         session_id=session_id,
         project=project,
@@ -296,9 +330,15 @@ def _build_summary_from_stats(
         churn_score=churn.churn_score,
         redundant_read_count=churn.redundant_read_count,
         productive_edit_count=churn.productive_edit_count,
-        health_tier=churn.health_tier,
-        health_reason=churn.health_reason,
+        churn_tier=churn.health_tier,
+        churn_reason=churn.health_reason,
         most_reread_files=churn.most_reread_files,
+        context_tokens=last_ctx,
+        context_pct=ctx_pct,
+        context_tier=ctx_tier,
+        context_reason=ctx_reason,
+        health_tier=combined_tier,
+        health_reason=combined_reason,
     )
 
 

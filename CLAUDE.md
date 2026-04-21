@@ -15,6 +15,6 @@ A previous session left unfinished work. Read the handoff whose title matches th
 
 | When | Session | Title | Turns | Churn |
 |---|---|---|---|---|
-| 2026-04-15 11:57 | [7a516c8e](.anvl/handoffs/20260415-1117-7a516c8e.md) | Read handoff.md and continue | 19 | 0.17 |
+| 2026-04-21 11:33 | [7a516c8e](.anvl/handoffs/20260415-1117-7a516c8e.md) | Read handoff.md and continue | 20 | 0.13 |
 | unknown | [legacy00](.anvl/handoffs/20260415-1118-legacy00.md) | Untitled | 0 | 0.0 |
 <!-- anvl:handoffs-end -->

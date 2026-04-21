@@ -167,8 +167,8 @@ def hook_entrypoint(can_block: bool = True) -> None:
     # Always auto-save the handoff for this session (free, local)
     handoff_path = _auto_save_handoff(jsonl_path, cwd)
 
-    # Compute churn to decide if we should alert
-    from .parser import compute_churn_from_tools
+    # Compute churn + context pressure to decide if we should alert
+    from .parser import compute_churn_from_tools, compute_context_tier, worst_tier
     from .sessions import _quick_session_stats
 
     stats = _quick_session_stats(jsonl_path)
@@ -178,26 +178,25 @@ def hook_entrypoint(can_block: bool = True) -> None:
 
     churn = compute_churn_from_tools(stats.get("tools_per_turn", []))
 
-    # Only alert in yellow/red/critical
-    if churn.health_tier == "green":
+    from .config import get_context_limit
+
+    per_turn_context = stats.get("per_turn_context", [])
+    last_context = per_turn_context[-1] if per_turn_context else 0
+    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=get_context_limit())
+
+    combined_tier = worst_tier(churn.health_tier, ctx_tier)
+    if combined_tier == "green":
         return
 
-    # Compute informational inflation ratio
-    per_turn = stats["per_turn_tokens"]
-    baseline_tpt = 0
-    inflation = 1.0
-    if len(per_turn) >= 3:
-        import statistics as _stats
+    # Figure out which signal is driving the alert (or both)
+    drivers = []
+    if churn.health_tier != "green":
+        drivers.append(f"churn {churn.churn_score} ({churn.health_reason})")
+    if ctx_tier != "green":
+        drivers.append(ctx_reason)
 
-        window = per_turn[2:7] if len(per_turn) >= 3 else []
-        if window:
-            baseline_tpt = int(_stats.median(window))
-        recent = per_turn[-5:]
-        if baseline_tpt > 0 and recent:
-            inflation = round((sum(recent) / len(recent)) / baseline_tpt, 1)
-
-    icon = {"yellow": "🟡", "red": "🔴", "critical": "⛔"}.get(churn.health_tier, "•")
-    tier_label = churn.health_tier.upper()
+    icon = {"yellow": "🟡", "red": "🔴", "critical": "⛔"}.get(combined_tier, "•")
+    tier_label = combined_tier.upper()
 
     rel_path = ""
     if handoff_path:
@@ -209,17 +208,10 @@ def hook_entrypoint(can_block: bool = True) -> None:
     msg_lines = [
         "",
         "=" * 60,
-        f"[ANVL] {icon} Session churning ({tier_label}) — churn {churn.churn_score}",
-        f"       {churn.health_reason}",
+        f"[ANVL] {icon} Session getting heavy ({tier_label})",
     ]
-    if baseline_tpt > 0:
-        from .analyzer import format_tokens
-
-        msg_lines.append(
-            f"       Token cost: {inflation}x session baseline "
-            f"({format_tokens(baseline_tpt)}/turn → "
-            f"{format_tokens(int(sum(per_turn[-5:]) / max(1, len(per_turn[-5:]))))}/turn)"
-        )
+    for d in drivers:
+        msg_lines.append(f"       • {d}")
     if rel_path:
         msg_lines.append(f"       Handoff auto-saved: {rel_path}")
     msg_lines.append("       Start a new conversation at a natural break — CLAUDE.md has the handoff index.")

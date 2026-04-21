@@ -85,6 +85,11 @@ def cmd_status(args: argparse.Namespace) -> None:
             "ai_title": metrics.ai_title,
             "turns": metrics.turn_count,
             "churn_score": metrics.churn_score,
+            "churn_tier": metrics.churn_tier,
+            "churn_reason": metrics.churn_reason,
+            "context_tokens": metrics.context_tokens,
+            "context_pct": metrics.context_pct,
+            "context_tier": metrics.context_tier,
             "health_tier": metrics.health_tier,
             "health_reason": metrics.health_reason,
             "redundant_reads": metrics.redundant_read_count,
@@ -117,9 +122,17 @@ def _print_status(metrics: SessionMetrics, session) -> None:
         f"Input: [bold]{format_tokens(metrics.total_input_tokens)}[/bold] | "
         f"Output: [bold]{format_tokens(metrics.total_output_tokens)}[/bold]"
     )
+    churn_color = TIER_COLORS.get(metrics.churn_tier, "white")
+    ctx_color = TIER_COLORS.get(metrics.context_tier, "white")
     lines.append(
-        f"Health: {icon} [{color}][bold]{metrics.health_tier.upper()}[/bold][/{color}] | "
-        f"Churn: [bold {color}]{metrics.churn_score}[/bold {color}]  [dim]({metrics.health_reason})[/dim]"
+        f"Health: {icon} [{color}][bold]{metrics.health_tier.upper()}[/bold][/{color}]  "
+        f"[dim]({metrics.health_reason})[/dim]"
+    )
+    lines.append(
+        f"Churn: [bold {churn_color}]{metrics.churn_score}[/bold {churn_color}] "
+        f"[dim]({metrics.churn_tier})[/dim] | "
+        f"Context: [bold {ctx_color}]{int(metrics.context_pct * 100)}%[/bold {ctx_color}] "
+        f"[dim]({format_tokens(metrics.context_tokens)} / 200K)[/dim]"
     )
     lines.append(
         f"Baseline: [dim]{format_tokens(metrics.baseline_per_turn)}/turn[/dim] | "
@@ -387,6 +400,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     table.add_column("Title", max_width=30)
     table.add_column("Turns", justify="right", width=6)
     table.add_column("Churn", justify="right", width=6)
+    table.add_column("Ctx", justify="right", width=5)
     table.add_column("Input", justify="right", width=8)
     table.add_column("Output", justify="right", width=8)
     table.add_column("Started", width=16)
@@ -414,14 +428,16 @@ def cmd_sessions(args: argparse.Namespace) -> None:
             active_count += 1
 
         started_str = s.started_at.astimezone().strftime("%Y-%m-%d %H:%M")
-        tier_color = TIER_COLORS.get(s.health_tier, "white")
+        churn_c = TIER_COLORS.get(s.churn_tier, "white")
+        ctx_c = TIER_COLORS.get(s.context_tier, "white")
 
         table.add_row(
             indicator,
             s.project[:20],
             s.ai_title[:30],
             str(s.turns),
-            f"[{tier_color}]{s.churn_score}[/{tier_color}]",
+            f"[{churn_c}]{s.churn_score}[/{churn_c}]",
+            f"[{ctx_c}]{int(s.context_pct * 100)}%[/{ctx_c}]",
             format_tokens(s.total_input),
             format_tokens(s.total_output),
             started_str,

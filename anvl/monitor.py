@@ -111,8 +111,9 @@ def build_monitor_display() -> Group:
     active = [s for s in summaries if s.is_active]
 
     header = (
-        "  Churn thresholds: [green]<0.5[/green] [yellow]<1.5[/yellow] "
-        f"[red]<3[/red] [bright_red]≥3[/bright_red]  │  Active: [bold]{len(active)}[/bold]"
+        "  [dim]Thresholds: churn [green]<0.5[/green] [yellow]<1.5[/yellow] [red]<3[/red] "
+        "[bright_red]≥3[/bright_red]  ·  ctx [green]<50%[/green] [yellow]<75%[/yellow] "
+        f"[red]<90%[/red] [bright_red]≥90%[/bright_red][/dim]  │  Active: [bold]{len(active)}[/bold]"
     )
 
     session_lines: list[str] = []
@@ -145,22 +146,24 @@ def build_monitor_display() -> Group:
             else:
                 bar = _churn_bar(s.churn_score, color)
                 turns_str = f"{s.turns} turn{'s' if s.turns != 1 else ''}"
-                churn_str = f"[{color}]{s.churn_score:.2f}[/{color}]"
+                churn_color = TIER_COLORS.get(s.churn_tier, "white")
+                ctx_color = TIER_COLORS.get(s.context_tier, "white")
+                churn_str = f"[{churn_color}]{s.churn_score:.2f}[/{churn_color}]"
+                ctx_str = f"[{ctx_color}]{int(s.context_pct * 100):>3}%[/{ctx_color}]"
 
                 session_lines.append(
                     f"  {icon} {title:<40s}  {turns_str:>8s}  {elapsed:>5s}  "
-                    f"churn {churn_str} {bar}  [cyan]{cost_str}[/cyan]"
+                    f"churn {churn_str} {bar} ctx {ctx_str}  [cyan]{cost_str}[/cyan]"
                 )
 
-                if tier != "green" and s.turns >= 5:
-                    cur = _current_avg(s)
-                    bl = s.session_baseline_tpt
-                    if bl > 0:
-                        ratio = round(cur / bl, 1) if bl else 1.0
-                        cost_detail = f"~{format_tokens(bl)} → ~{format_tokens(cur)}/turn ({ratio}x)"
-                    else:
-                        cost_detail = f"~{format_tokens(cur)}/turn"
-                    session_lines.append(f"    [{color}]⚠ {tier.upper()} — {s.health_reason} · {cost_detail}[/{color}]")
+                if tier != "green" and s.turns >= 3:
+                    drivers = []
+                    if s.churn_tier != "green":
+                        drivers.append(f"{s.churn_reason}")
+                    if s.context_tier != "green":
+                        drivers.append(f"{s.context_reason}")
+                    detail = " · ".join(drivers) if drivers else s.health_reason
+                    session_lines.append(f"    [{color}]⚠ {tier.upper()} — {detail}[/{color}]")
 
     # Compose panel content
     content_parts = [
@@ -194,9 +197,13 @@ def build_monitor_display() -> Group:
             footer_parts.append(f"[red]{format_tokens(wasted)}[/red] wasted by inflation")
         parts.append(Text.from_markup(f"  {' │ '.join(footer_parts)}"))
 
+    from .config import get_context_limit
+
+    ctx_limit_str = format_tokens(get_context_limit())
     parts.append(
         Text.from_markup(
-            "  [dim]churn = redundant reads / productive edits (10-turn window) │ cost = weighted tokens[/dim]"
+            "  [dim]churn = redundant reads / productive edits (10-turn window) · "
+            f"ctx = % of {ctx_limit_str} window used by current turn · cost = weighted tokens[/dim]"
         )
     )
 

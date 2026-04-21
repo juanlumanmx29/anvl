@@ -8,7 +8,7 @@ which measured token growth vs a global baseline.
 import statistics
 from dataclasses import dataclass, field
 
-from .parser import SessionData, TokenUsage, compute_churn
+from .parser import SessionData, TokenUsage, compute_churn, compute_context_tier, worst_tier
 
 # Window size for baseline tpt (turns 3..7 inclusive in 1-indexed terms)
 BASELINE_TURN_START = 2  # 0-indexed start
@@ -26,6 +26,7 @@ class TurnMetrics:
     input_tokens: int = 0
     cumulative_input: int = 0
     cumulative_output: int = 0
+    peak_context: int = 0  # max context window size in this turn
     is_tool_only: bool = False
     timestamp: str = ""
 
@@ -39,13 +40,21 @@ class SessionMetrics:
     total_output_tokens: int = 0
     total_cache_read: int = 0
     total_cache_creation: int = 0
-    # Churn-based health (replaces waste_factor)
+    # Churn-based health
     churn_score: float = 0.0
     redundant_read_count: int = 0
     productive_edit_count: int = 0
-    health_tier: str = "green"  # green | yellow | red | critical
-    health_reason: str = ""
+    churn_tier: str = "green"
+    churn_reason: str = ""
     most_reread_files: list[tuple[str, int]] = field(default_factory=list)
+    # Context window pressure
+    context_tokens: int = 0
+    context_pct: float = 0.0
+    context_tier: str = "green"
+    context_reason: str = ""
+    # Combined
+    health_tier: str = "green"
+    health_reason: str = ""
     # Session-relative baseline (informational)
     baseline_per_turn: int = 0
     current_per_turn: int = 0
@@ -145,6 +154,7 @@ def analyze_session(session: SessionData) -> SessionMetrics:
             input_tokens=u.input_tokens,
             cumulative_input=cumulative_input,
             cumulative_output=cumulative_output,
+            peak_context=turn.peak_context,
             is_tool_only=turn.is_tool_only,
             timestamp=turn.timestamp,
         )
@@ -155,14 +165,38 @@ def analyze_session(session: SessionData) -> SessionMetrics:
         metrics.total_cache_read += u.cache_read_input_tokens
         metrics.total_cache_creation += u.cache_creation_input_tokens
 
-    # Churn (primary health signal)
+    # Churn
     churn = compute_churn(session.turns)
     metrics.churn_score = churn.churn_score
     metrics.redundant_read_count = churn.redundant_read_count
     metrics.productive_edit_count = churn.productive_edit_count
-    metrics.health_tier = churn.health_tier
-    metrics.health_reason = churn.health_reason
+    metrics.churn_tier = churn.health_tier
+    metrics.churn_reason = churn.health_reason
     metrics.most_reread_files = churn.most_reread_files
+
+    # Context pressure: use the last meaningful turn's peak context
+    last_context = 0
+    for tm in reversed(metrics.per_turn):
+        if tm.peak_context > 0:
+            last_context = tm.peak_context
+            break
+    from .config import get_context_limit
+
+    ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=get_context_limit())
+    metrics.context_tokens = last_context
+    metrics.context_pct = ctx_pct
+    metrics.context_tier = ctx_tier
+    metrics.context_reason = ctx_reason
+
+    # Combined
+    combined = worst_tier(churn.health_tier, ctx_tier)
+    metrics.health_tier = combined
+    if combined == churn.health_tier and churn.health_tier != "green":
+        metrics.health_reason = churn.health_reason
+    elif combined == ctx_tier and ctx_tier != "green":
+        metrics.health_reason = ctx_reason
+    else:
+        metrics.health_reason = churn.health_reason or ctx_reason
 
     # Inflation (informational)
     inflation, baseline, current = compute_inflation_ratio(metrics.per_turn)

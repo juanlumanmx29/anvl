@@ -15,9 +15,21 @@ DEFAULT_CONFIG = {
     "churn_yellow": 0.5,
     "churn_red": 1.5,
     "churn_critical": 3.0,
-    "churn_window": 10,  # rolling turn window for churn
+    "churn_window": 10,
+    # Context window size in tokens. 200_000 for Sonnet/Opus 4, 1_000_000 for
+    # the 1M-context variants. Override in ~/.anvl/config.json if needed.
+    "context_limit": 200_000,
     "handoffs_dir": ".anvl/handoffs",
 }
+
+
+def get_context_limit() -> int:
+    """Return the configured context window size (defaults to 200_000)."""
+    cfg = load_config()
+    try:
+        return int(cfg.get("context_limit", 200_000))
+    except (TypeError, ValueError):
+        return 200_000
 
 
 def load_config() -> dict:
