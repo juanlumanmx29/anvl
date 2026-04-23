@@ -167,9 +167,9 @@ def hook_entrypoint(can_block: bool = True) -> None:
     # Always auto-save the handoff for this session (free, local)
     handoff_path = _auto_save_handoff(jsonl_path, cwd)
 
-    # Compute churn + context pressure to decide if we should alert
+    # Compute churn + context + inflation pressure to decide if we should alert
     from .parser import compute_churn_from_tools, compute_context_tier, worst_tier
-    from .sessions import _quick_session_stats, _resolve_context_limit
+    from .sessions import _quick_session_stats, _resolve_context_limit, compute_inflation_tier
 
     stats = _quick_session_stats(jsonl_path)
     turns = stats["turns"]
@@ -183,16 +183,21 @@ def hook_entrypoint(can_block: bool = True) -> None:
     limit = _resolve_context_limit(stats.get("model", ""), per_turn_context)
     ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=limit)
 
-    combined_tier = worst_tier(churn.health_tier, ctx_tier)
+    per_turn_tokens = stats.get("per_turn_tokens", [])
+    infl_tier, _infl_ratio, infl_reason = compute_inflation_tier(per_turn_tokens)
+
+    combined_tier = worst_tier(worst_tier(churn.health_tier, ctx_tier), infl_tier)
     if combined_tier == "green":
         return
 
-    # Figure out which signal is driving the alert (or both)
+    # Figure out which signal(s) are driving the alert
     drivers = []
     if churn.health_tier != "green":
         drivers.append(f"churn {churn.churn_score} ({churn.health_reason})")
     if ctx_tier != "green":
         drivers.append(ctx_reason)
+    if infl_tier != "green":
+        drivers.append(infl_reason)
 
     icon = {"yellow": "🟡", "red": "🔴", "critical": "⛔"}.get(combined_tier, "•")
     tier_label = combined_tier.upper()

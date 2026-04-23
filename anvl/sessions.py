@@ -37,6 +37,42 @@ TOKEN_WEIGHTS = {
 BASELINE_TURN_START = 2  # 0-indexed turn 2 = human turn 3
 BASELINE_TURN_END = 7  # 0-indexed turn 6 = human turn 7 (exclusive: slice [2:7])
 
+# Inflation alert thresholds: avg tokens/turn over the last 5 turns divided
+# by the median baseline. ANVL's original promise — warn before Claude does
+# when a session is burning way more tokens per turn than a fresh one would.
+INFLATION_YELLOW = 1.5
+INFLATION_RED = 2.5
+
+
+def compute_inflation_tier(per_turn_tokens: list[int]) -> tuple[str, float, str]:
+    """Return (tier, ratio, reason) for tokens-per-turn inflation vs baseline.
+
+    Baseline = median of turns 3..7 (the stable window before context grows
+    naturally). Recent = average of the last 5 turns. Below `BASELINE_TURN_END`
+    turns the baseline isn't reliable yet — return green.
+    """
+    if len(per_turn_tokens) < BASELINE_TURN_END:
+        return "green", 1.0, f"baseline warming up ({len(per_turn_tokens)} turns)"
+    window = per_turn_tokens[BASELINE_TURN_START:BASELINE_TURN_END]
+    if not window:
+        return "green", 1.0, "no baseline data"
+    baseline = statistics.median(window)
+    if baseline <= 0:
+        return "green", 1.0, "no baseline data"
+    recent_window = per_turn_tokens[-5:]
+    if not recent_window:
+        return "green", 1.0, "no recent data"
+    recent_avg = sum(recent_window) / len(recent_window)
+    ratio = recent_avg / baseline
+    if ratio >= INFLATION_RED:
+        tier = "red"
+    elif ratio >= INFLATION_YELLOW:
+        tier = "yellow"
+    else:
+        tier = "green"
+    reason = f"tokens/turn inflated {ratio:.1f}x over baseline ({int(baseline):,} → {int(recent_avg):,})"
+    return tier, round(ratio, 2), reason
+
 
 def _resolve_context_limit(model_id: str, per_turn_context: list[int]) -> int:
     """Resolve the per-session context window limit.
@@ -98,7 +134,11 @@ class SessionSummary:
     context_limit: int = 200_000  # limit used to classify this session
     model: str = ""  # most recent assistant model id seen in the JSONL
 
-    # Combined health — worst of churn and context tiers
+    # Inflation pressure (ANVL's original signal — per-turn cost vs baseline)
+    inflation_tier: str = "green"
+    inflation_reason: str = ""
+
+    # Combined health — worst of churn, context, and inflation tiers
     health_tier: str = "green"
     health_reason: str = ""
 
@@ -119,10 +159,7 @@ class SessionSummary:
 
     @property
     def inflation_ratio(self) -> float:
-        """Secondary informational metric: recent tpt / baseline tpt.
-
-        Not used to trigger alerts — only displayed in alert text for context.
-        """
+        """Recent tpt / baseline tpt. Drives the inflation alert tier."""
         baseline = self.session_baseline_tpt
         if baseline <= 0 or len(self.per_turn_tokens) < BASELINE_TURN_END:
             return 1.0
@@ -337,7 +374,7 @@ def _build_summary_from_stats(
     is_active: bool,
     stats: dict,
 ) -> SessionSummary:
-    """Build a SessionSummary with churn + context pressure from the stats dict."""
+    """Build a SessionSummary with churn + context + inflation pressure."""
     churn = compute_churn_from_tools(stats.get("tools_per_turn", []))
 
     per_turn_context = stats.get("per_turn_context", [])
@@ -346,13 +383,18 @@ def _build_summary_from_stats(
     resolved_limit = _resolve_context_limit(model_id, per_turn_context)
     ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_ctx, limit=resolved_limit)
 
-    combined_tier = worst_tier(churn.health_tier, ctx_tier)
-    if combined_tier == churn.health_tier and churn.health_tier != "green":
+    per_turn_tokens = stats.get("per_turn_tokens", [])
+    infl_tier, _infl_ratio, infl_reason = compute_inflation_tier(per_turn_tokens)
+
+    combined_tier = worst_tier(worst_tier(churn.health_tier, ctx_tier), infl_tier)
+    if combined_tier == "green":
+        combined_reason = churn.health_reason or ctx_reason
+    elif combined_tier == churn.health_tier:
         combined_reason = churn.health_reason
-    elif combined_tier == ctx_tier and ctx_tier != "green":
+    elif combined_tier == ctx_tier:
         combined_reason = ctx_reason
     else:
-        combined_reason = churn.health_reason or ctx_reason
+        combined_reason = infl_reason
 
     return SessionSummary(
         session_id=session_id,
@@ -381,6 +423,8 @@ def _build_summary_from_stats(
         context_reason=ctx_reason,
         context_limit=resolved_limit,
         model=model_id,
+        inflation_tier=infl_tier,
+        inflation_reason=infl_reason,
         health_tier=combined_tier,
         health_reason=combined_reason,
     )
