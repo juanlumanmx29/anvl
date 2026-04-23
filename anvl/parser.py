@@ -308,11 +308,14 @@ class ChurnStats:
     health_reason: str  # short human explanation
 
 
-# Context window thresholds as fraction of the model's context limit.
-# Default assumes a 200K window — adjust via compute_context_tier() if needed.
-CONTEXT_YELLOW_PCT = 0.50
-CONTEXT_RED_PCT = 0.75
-CONTEXT_CRITICAL_PCT = 0.90
+# Context window thresholds as fraction of the model's raw context limit.
+# Claude Code's native auto-compact warning reserves ~20-30% of the window
+# for system prompt + tools + response headroom, so its orange arc appears
+# at ~50% of raw usage for 1M variants. ANVL's promise is to warn *before*
+# Claude does — so yellow fires at 35%, red at 50%, critical at 70%.
+CONTEXT_YELLOW_PCT = 0.35
+CONTEXT_RED_PCT = 0.50
+CONTEXT_CRITICAL_PCT = 0.70
 DEFAULT_CONTEXT_LIMIT = 200_000
 
 # Per-family context window sizes. Opus 4.6 and 4.7 default to the 1M tier
