@@ -183,8 +183,8 @@ def hook_entrypoint(can_block: bool = True) -> None:
     limit = _resolve_context_limit(stats.get("model", ""), per_turn_context)
     ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_context, limit=limit)
 
-    per_turn_tokens = stats.get("per_turn_tokens", [])
-    infl_tier, _infl_ratio, infl_reason = compute_inflation_tier(per_turn_tokens)
+    per_turn_weighted = stats.get("per_turn_weighted", [])
+    infl_tier, _infl_ratio, infl_reason = compute_inflation_tier(per_turn_weighted)
 
     combined_tier = worst_tier(worst_tier(churn.health_tier, ctx_tier), infl_tier)
     if combined_tier == "green":

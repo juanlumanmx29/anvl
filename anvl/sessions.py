@@ -37,29 +37,37 @@ TOKEN_WEIGHTS = {
 BASELINE_TURN_START = 2  # 0-indexed turn 2 = human turn 3
 BASELINE_TURN_END = 7  # 0-indexed turn 6 = human turn 7 (exclusive: slice [2:7])
 
-# Inflation alert thresholds: avg tokens/turn over the last 5 turns divided
-# by the median baseline. ANVL's original promise — warn before Claude does
-# when a session is burning way more tokens per turn than a fresh one would.
-INFLATION_YELLOW = 1.5
-INFLATION_RED = 2.5
+# Inflation alert thresholds: avg weighted-cost/turn over the last 5 turns
+# divided by the median baseline. Weighted cost discounts cache_read 10x so
+# natural conversation growth doesn't trigger false positives — only real
+# spikes in output, fresh input, or churn move the needle. Thresholds tuned
+# so a healthy 20-turn session stays green even with linear cache growth.
+INFLATION_YELLOW = 2.0
+INFLATION_RED = 3.0
 
 
-def compute_inflation_tier(per_turn_tokens: list[int]) -> tuple[str, float, str]:
-    """Return (tier, ratio, reason) for tokens-per-turn inflation vs baseline.
+def compute_inflation_tier(per_turn_weighted: list[float]) -> tuple[str, float, str]:
+    """Return (tier, ratio, reason) for weighted-cost inflation vs baseline.
 
-    Baseline = median of turns 3..7 (the stable window before context grows
-    naturally). Recent = average of the last 5 turns. Below `BASELINE_TURN_END`
-    turns the baseline isn't reliable yet — return green.
+    Uses **weighted** per-turn cost (not raw tokens), where cache_read is
+    discounted 10x to match real quota impact. Raw token sums grow naturally
+    with conversation length because each request re-sends the cached context
+    — that's not waste, it's just how the API works. Weighted cost stays
+    stable when the session is healthy and only spikes on real inefficiency
+    (long outputs, big uncached input, churning).
+
+    Baseline = median of turns 3..7. Recent = avg of last 5 turns. Below
+    `BASELINE_TURN_END` turns the baseline isn't reliable yet — return green.
     """
-    if len(per_turn_tokens) < BASELINE_TURN_END:
-        return "green", 1.0, f"baseline warming up ({len(per_turn_tokens)} turns)"
-    window = per_turn_tokens[BASELINE_TURN_START:BASELINE_TURN_END]
+    if len(per_turn_weighted) < BASELINE_TURN_END:
+        return "green", 1.0, f"baseline warming up ({len(per_turn_weighted)} turns)"
+    window = per_turn_weighted[BASELINE_TURN_START:BASELINE_TURN_END]
     if not window:
         return "green", 1.0, "no baseline data"
     baseline = statistics.median(window)
     if baseline <= 0:
         return "green", 1.0, "no baseline data"
-    recent_window = per_turn_tokens[-5:]
+    recent_window = per_turn_weighted[-5:]
     if not recent_window:
         return "green", 1.0, "no recent data"
     recent_avg = sum(recent_window) / len(recent_window)
@@ -70,7 +78,7 @@ def compute_inflation_tier(per_turn_tokens: list[int]) -> tuple[str, float, str]
         tier = "yellow"
     else:
         tier = "green"
-    reason = f"tokens/turn inflated {ratio:.1f}x over baseline ({int(baseline):,} → {int(recent_avg):,})"
+    reason = f"weighted cost/turn inflated {ratio:.1f}x over baseline ({int(baseline):,} → {int(recent_avg):,})"
     return tier, round(ratio, 2), reason
 
 
@@ -196,7 +204,8 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
         "cache_creation": 0,
         "output": 0,
         "turns": 0,
-        "per_turn_tokens": [],  # total tokens per user turn
+        "per_turn_tokens": [],  # raw total tokens per user turn (display)
+        "per_turn_weighted": [],  # weighted cost per turn (drives inflation alert)
         "per_turn_context": [],  # input + cache_read + cache_creation per turn (what model saw)
         "tools_per_turn": [],  # list[list[ToolUseRecord]]
         "model": "",  # most recent assistant model id seen
@@ -204,7 +213,9 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
 
     request_usage: dict[str, dict] = {}
     current_turn_direct = 0
+    current_turn_direct_weighted = 0.0
     turn_request_usage: dict[str, int] = {}
+    turn_request_weighted: dict[str, float] = {}
     turn_request_context: dict[str, int] = {}  # per-request context size (input+cache)
     current_turn_direct_context = 0
     current_tool_uses: list[ToolUseRecord] = []
@@ -213,15 +224,20 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
     def _finalize_turn():
         nonlocal current_turn_direct, turn_request_usage, current_tool_uses
         nonlocal current_turn_direct_context, turn_request_context
+        nonlocal current_turn_direct_weighted, turn_request_weighted
         turn_total = current_turn_direct + sum(turn_request_usage.values())
+        turn_weighted = current_turn_direct_weighted + sum(turn_request_weighted.values())
         turn_context = current_turn_direct_context + max(turn_request_context.values(), default=0)
         if turn_total > 0:
             totals["per_turn_tokens"].append(turn_total)
+            totals["per_turn_weighted"].append(turn_weighted)
             totals["per_turn_context"].append(turn_context)
             totals["tools_per_turn"].append(current_tool_uses)
         current_turn_direct = 0
+        current_turn_direct_weighted = 0.0
         current_turn_direct_context = 0
         turn_request_usage = {}
+        turn_request_weighted = {}
         turn_request_context = {}
         current_tool_uses = []
 
@@ -258,11 +274,18 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
                         cc = usage.get("cache_creation_input_tokens", 0)
                         out = usage.get("output_tokens", 0)
                         total = inp + cr + cc + out
+                        weighted = (
+                            inp * TOKEN_WEIGHTS["input"]
+                            + cr * TOKEN_WEIGHTS["cache_read"]
+                            + cc * TOKEN_WEIGHTS["cache_creation"]
+                            + out * TOKEN_WEIGHTS["output"]
+                        )
                         context_size = inp + cr + cc  # what the model saw
                         request_id = record.get("requestId", "")
                         if request_id:
                             request_usage[request_id] = usage
                             turn_request_usage[request_id] = total
+                            turn_request_weighted[request_id] = weighted
                             turn_request_context[request_id] = context_size
                         else:
                             totals["input"] += inp
@@ -270,6 +293,7 @@ def _quick_session_stats(jsonl_path: Path) -> dict:
                             totals["cache_creation"] += cc
                             totals["output"] += out
                             current_turn_direct += total
+                            current_turn_direct_weighted += weighted
                             current_turn_direct_context += context_size
 
                     # Extract tool uses for churn
@@ -383,8 +407,8 @@ def _build_summary_from_stats(
     resolved_limit = _resolve_context_limit(model_id, per_turn_context)
     ctx_tier, ctx_pct, ctx_reason = compute_context_tier(last_ctx, limit=resolved_limit)
 
-    per_turn_tokens = stats.get("per_turn_tokens", [])
-    infl_tier, _infl_ratio, infl_reason = compute_inflation_tier(per_turn_tokens)
+    per_turn_weighted = stats.get("per_turn_weighted", [])
+    infl_tier, _infl_ratio, infl_reason = compute_inflation_tier(per_turn_weighted)
 
     combined_tier = worst_tier(worst_tier(churn.health_tier, ctx_tier), infl_tier)
     if combined_tier == "green":
