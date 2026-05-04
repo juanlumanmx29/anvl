@@ -119,13 +119,50 @@ def post_tool_use_entrypoint() -> None:
     return
 
 
+# Successor sessions skip checks for this many turns after ANVL_RESUME prompt.
+SUCCESSOR_GRACE_TURNS = 10
+ANVL_RESUME_PREFIX = "ANVL_RESUME"
+
+
+def _successor_marker_path(cwd: Path, session_short: str) -> Path:
+    return cwd / ".anvl" / f".successor-{session_short}"
+
+
+def _is_successor_session(cwd: Path, session_short: str, turns: int) -> bool:
+    """Return True if this session was created from an ANVL_RESUME prompt
+    and is still inside its grace window."""
+    marker = _successor_marker_path(cwd, session_short)
+    if not marker.exists():
+        return False
+    if turns >= SUCCESSOR_GRACE_TURNS:
+        # Grace expired — clean up and resume normal checks
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _mark_successor(cwd: Path, session_short: str) -> None:
+    """Create the successor marker file. Idempotent."""
+    marker = _successor_marker_path(cwd, session_short)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("successor\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def hook_entrypoint(can_block: bool = True) -> None:
     """UserPromptSubmit hook.
 
-    1. Parse the current session and compute churn.
+    1. Parse the current session and compute churn/context/inflation.
     2. Always refresh `.anvl/handoffs/<current>.md` (free, local).
-    3. If churn ≥ yellow, print an alert and refresh CLAUDE.md index.
-    4. The 'anvl bypass' escape hatch skips everything.
+    3. yellow → print warning to stdout (informational).
+    4. red/critical → print copy-paste block message to stderr + exit 2 (blocks).
+    5. ANVL_RESUME prefix → mark session as successor and skip checks for N turns.
+    6. The 'anvl bypass' escape hatch skips everything.
     """
     hook_input = {}
     try:
@@ -136,11 +173,11 @@ def hook_entrypoint(can_block: bool = True) -> None:
         pass
 
     prompt = hook_input.get("prompt", "")
+    cwd = Path(hook_input.get("cwd", "")) if hook_input.get("cwd") else Path.cwd()
+
     if "anvl bypass" in prompt.lower():
         print("[ANVL] Bypass activated — session checks skipped.", file=sys.stdout)
         return
-
-    cwd = Path(hook_input.get("cwd", "")) if hook_input.get("cwd") else Path.cwd()
 
     from .config import find_project_dir
     from .handoff import migrate_legacy_handoff
@@ -163,6 +200,24 @@ def hook_entrypoint(can_block: bool = True) -> None:
         return
 
     jsonl_path, session_id = result
+    session_short = session_id[:8] if session_id else "unknown"
+
+    # ANVL_RESUME marker — user pasted the copy-paste prompt from a prior
+    # blocked session. Tell Claude this is a fresh successor, then skip
+    # checks for the grace window.
+    if prompt.lstrip().startswith(ANVL_RESUME_PREFIX):
+        _mark_successor(cwd, session_short)
+        # Try to extract the handoff path from the prompt for context
+        rest = prompt.lstrip()[len(ANVL_RESUME_PREFIX):].strip()
+        handoff_hint = rest.split()[0] if rest else "(see CLAUDE.md handoff index)"
+        msg = (
+            "[ANVL] Successor session detected. This is a NEW conversation — "
+            f"do NOT treat it as full. Read the handoff at {handoff_hint} and "
+            f"continue the prior work. ANVL checks paused for the next "
+            f"{SUCCESSOR_GRACE_TURNS} turns."
+        )
+        print(msg, file=sys.stdout)
+        return
 
     # Always auto-save the handoff for this session (free, local)
     handoff_path = _auto_save_handoff(jsonl_path, cwd)
@@ -174,6 +229,10 @@ def hook_entrypoint(can_block: bool = True) -> None:
     stats = _quick_session_stats(jsonl_path)
     turns = stats["turns"]
     if turns < 3:
+        return
+
+    # Successor grace window — skip checks if this session was just resumed
+    if _is_successor_session(cwd, session_short, turns):
         return
 
     churn = compute_churn_from_tools(stats.get("tools_per_turn", []))
@@ -199,9 +258,6 @@ def hook_entrypoint(can_block: bool = True) -> None:
     if infl_tier != "green":
         drivers.append(infl_reason)
 
-    icon = {"yellow": "🟡", "red": "🔴", "critical": "⛔"}.get(combined_tier, "•")
-    tier_label = combined_tier.upper()
-
     rel_path = ""
     if handoff_path:
         try:
@@ -209,19 +265,58 @@ def hook_entrypoint(can_block: bool = True) -> None:
         except ValueError:
             rel_path = str(handoff_path)
 
+    if combined_tier in ("red", "critical"):
+        # Hard block: stderr + exit 2. Claude Code shows this directly to
+        # the user (no paraphrasing) and stops the prompt from being sent.
+        icon = "⛔" if combined_tier == "critical" else "🔴"
+        block_msg = _build_block_message(icon, combined_tier, drivers, rel_path)
+        print(block_msg, file=sys.stderr)
+        sys.stderr.flush()
+        sys.exit(2)
+
+    # yellow → informational warning to stdout (entered into Claude's context)
+    icon = "🟡"
     msg_lines = [
         "",
         "=" * 60,
-        f"[ANVL] {icon} Session getting heavy ({tier_label})",
+        f"[ANVL] {icon} Session getting heavy (YELLOW)",
     ]
     for d in drivers:
         msg_lines.append(f"       • {d}")
     if rel_path:
         msg_lines.append(f"       Handoff auto-saved: {rel_path}")
-    msg_lines.append("       Start a new conversation at a natural break — CLAUDE.md has the handoff index.")
+    msg_lines.append("       Wrap up at a natural break — CLAUDE.md has the handoff index.")
     msg_lines.append('       To suppress this turn: prefix your message with "anvl bypass".')
     msg_lines.append("=" * 60)
     msg_lines.append("")
 
     print("\n".join(msg_lines), file=sys.stdout)
     sys.stdout.flush()
+
+
+def _build_block_message(icon: str, tier: str, drivers: list[str], rel_path: str) -> str:
+    """Compose the stderr block message with the copy-paste resume prompt."""
+    handoff_ref = rel_path if rel_path else "(handoff missing — check .anvl/handoffs/)"
+    sep = "─" * 60
+    bar = "=" * 60
+    lines = [
+        "",
+        bar,
+        f"[ANVL] {icon} Session BLOCKED ({tier.upper()}) — too heavy to continue.",
+        "",
+        "Open a new VSCode window or new conversation and paste THIS exact prompt:",
+        "",
+        sep,
+        f"{ANVL_RESUME_PREFIX} {handoff_ref}",
+        "Continúa con el handoff de la sesión anterior. Esta es una sesión NUEVA.",
+        sep,
+        "",
+        "Drivers:",
+    ]
+    for d in drivers:
+        lines.append(f"  • {d}")
+    lines.append("")
+    lines.append('To force-submit this turn anyway: prefix your message with "anvl bypass"')
+    lines.append(bar)
+    lines.append("")
+    return "\n".join(lines)

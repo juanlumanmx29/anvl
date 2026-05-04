@@ -22,6 +22,11 @@ from .parser import (
 _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
 _CACHE_TTL = 3.0  # seconds
 
+# A session is treated as "active" only if its JSONL has been touched within
+# this many seconds. Stale PID files (from closed VSCode windows) and recycled
+# PIDs would otherwise keep dead sessions visible in the monitor.
+JSONL_FRESHNESS_SECONDS = 300  # 5 min
+
 # Weighted token costs matching Claude's actual pricing ratios.
 # These weights approximate real quota impact.
 TOKEN_WEIGHTS = {
@@ -507,7 +512,12 @@ def collect_all_sessions() -> list[SessionSummary]:
             else:
                 started_at = datetime.fromtimestamp(jsonl_file.stat().st_mtime, tz=timezone.utc)
 
-            is_active = bool(pid) and _is_process_running(pid)
+            try:
+                jsonl_mtime = jsonl_file.stat().st_mtime
+            except OSError:
+                jsonl_mtime = 0
+            recently_touched = (time.time() - jsonl_mtime) < JSONL_FRESHNESS_SECONDS
+            is_active = bool(pid) and _is_process_running(pid) and recently_touched
             ai_title = _get_ai_title(jsonl_file)
             stats = _quick_session_stats(jsonl_file)
             project_name = _extract_project_name(cwd) if cwd else project_dir.name
