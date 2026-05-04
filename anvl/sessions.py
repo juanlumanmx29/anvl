@@ -23,9 +23,10 @@ _session_cache: dict = {"summaries": [], "mtime_key": "", "ts": 0.0}
 _CACHE_TTL = 3.0  # seconds
 
 # A session is treated as "active" only if its JSONL has been touched within
-# this many seconds. Stale PID files (from closed VSCode windows) and recycled
-# PIDs would otherwise keep dead sessions visible in the monitor.
-JSONL_FRESHNESS_SECONDS = 300  # 5 min
+# this many seconds. Catches stale PID files from closed VSCode windows and
+# recycled PIDs. Has to be lenient enough that a user reading a long output
+# without sending a prompt isn't marked dead — 30 min is the sweet spot.
+JSONL_FRESHNESS_SECONDS = 1800  # 30 min
 
 # Weighted token costs matching Claude's actual pricing ratios.
 # These weights approximate real quota impact.

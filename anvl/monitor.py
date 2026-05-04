@@ -107,13 +107,18 @@ def _current_avg(s) -> int:
 
 def build_monitor_display() -> Group:
     """Build the monitor display — one line per active session, churn-based."""
+    from .parser import CONTEXT_CRITICAL_PCT, CONTEXT_RED_PCT, CONTEXT_YELLOW_PCT
+
     summaries = collect_all_sessions()
     active = [s for s in summaries if s.is_active]
 
+    y = int(CONTEXT_YELLOW_PCT * 100)
+    r = int(CONTEXT_RED_PCT * 100)
+    c = int(CONTEXT_CRITICAL_PCT * 100)
     header = (
         "  [dim]Thresholds: churn [green]<0.5[/green] [yellow]<1.5[/yellow] [red]<3[/red] "
-        "[bright_red]≥3[/bright_red]  ·  ctx [green]<50%[/green] [yellow]<75%[/yellow] "
-        f"[red]<90%[/red] [bright_red]≥90%[/bright_red][/dim]  │  Active: [bold]{len(active)}[/bold]"
+        f"[bright_red]≥3[/bright_red]  ·  ctx [green]<{y}%[/green] [yellow]<{r}%[/yellow] "
+        f"[red]<{c}%[/red] [bright_red]≥{c}%[/bright_red][/dim]  │  Active: [bold]{len(active)}[/bold]"
     )
 
     session_lines: list[str] = []
