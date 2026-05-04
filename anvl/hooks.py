@@ -96,6 +96,50 @@ def session_start_entrypoint() -> None:
         print(msg, file=sys.stdout)
 
 
+def _emergency_handoff(jsonl_path: Path, cwd: Path, session_id: str, drivers: list[str]) -> Path | None:
+    """Write a minimal stub handoff when the full auto-save failed.
+
+    The full pipeline parses the entire JSONL and computes metrics; if any
+    of that fails (malformed records, OS error, etc.) we still owe the
+    user *something* to point at when blocking. This stub captures the
+    bare minimum: session id, time, why we blocked.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from .handoff import HANDOFFS_DIR_NAME, _handoff_filename
+
+        now = datetime.now(timezone.utc).astimezone()
+        path = cwd / HANDOFFS_DIR_NAME / _handoff_filename(session_id, now)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            lines = [
+                "---",
+                f"session_id: {session_id}",
+                f"session_short: {session_id[:8] if session_id else 'unknown'}",
+                f"generated_at: {now.isoformat()}",
+                "status: emergency_stub",
+                "---",
+                "",
+                "# ANVL Emergency Handoff (stub)",
+                "",
+                f"> Generated: {now.strftime('%Y-%m-%d %H:%M')}",
+                "",
+                "Auto-save failed during a block event — this stub exists so the",
+                "block message has a path to point to. Open the JSONL directly",
+                f"if you need the full session log: `{jsonl_path}`",
+                "",
+                "## Why ANVL blocked",
+                "",
+            ]
+            for d in drivers:
+                lines.append(f"- {d}")
+            path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+    except Exception:
+        return None
+
+
 def _auto_save_handoff(jsonl_path: Path, cwd: Path) -> Path | None:
     """Parse the session and write/refresh its handoff file. Fails silently."""
     try:
@@ -258,6 +302,12 @@ def hook_entrypoint(can_block: bool = True) -> None:
     if infl_tier != "green":
         drivers.append(infl_reason)
 
+    # If the regular auto-save failed (silent except), force a minimal
+    # emergency handoff so the block message always has something to point
+    # to. The user's chief complaint when blocked is "no handoff visible".
+    if handoff_path is None and combined_tier in ("red", "critical"):
+        handoff_path = _emergency_handoff(jsonl_path, cwd, session_id, drivers)
+
     rel_path = ""
     if handoff_path:
         try:
@@ -266,10 +316,22 @@ def hook_entrypoint(can_block: bool = True) -> None:
             rel_path = str(handoff_path)
 
     if combined_tier in ("red", "critical"):
-        # Hard block: stderr + exit 2. Claude Code shows this directly to
-        # the user (no paraphrasing) and stops the prompt from being sent.
+        # Hard block: dual-write to stdout AND stderr, save fallback file,
+        # then exit 2. Claude Code's UI rendering of stderr varies — some
+        # surfaces show it as a small system note that's easy to miss. The
+        # stdout copy goes into Claude's context so it can echo the resume
+        # prompt back. The fallback file gives the user a guaranteed place
+        # to find the copy-paste prompt.
         icon = "⛔" if combined_tier == "critical" else "🔴"
         block_msg = _build_block_message(icon, combined_tier, drivers, rel_path)
+        try:
+            last_block = cwd / ".anvl" / "last-block.md"
+            last_block.parent.mkdir(parents=True, exist_ok=True)
+            last_block.write_text(block_msg + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        print(block_msg, file=sys.stdout)
+        sys.stdout.flush()
         print(block_msg, file=sys.stderr)
         sys.stderr.flush()
         sys.exit(2)
